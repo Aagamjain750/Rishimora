@@ -9,6 +9,89 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => toast.classList.remove('visible'), 2600);
   };
+  const bagDrawer = document.getElementById('bag-drawer');
+  const bagDrawerBackdrop = document.getElementById('bag-drawer-backdrop');
+  const bagDrawerClose = document.getElementById('bag-drawer-close');
+  const bagDrawerItems = document.getElementById('bag-drawer-items');
+  const bagDrawerEmpty = document.getElementById('bag-drawer-empty');
+  const bagDrawerMessage = document.getElementById('bag-drawer-message');
+  const bagDrawerCount = document.getElementById('bag-drawer-count');
+  const bagDrawerSubtotal = document.getElementById('bag-drawer-subtotal');
+  let bagDrawerPreviousFocus = null;
+  const renderBagDrawer = (cart, message) => {
+    if (!bagDrawerItems || !cart) return;
+    bagDrawerItems.replaceChildren();
+    cart.items.forEach(item => {
+      const row = document.createElement('li');
+      row.className = 'bag-drawer-item';
+      const itemName = String(item.name || 'Product');
+      const mark = document.createElement('span');
+      mark.className = 'bag-drawer-mark';
+      mark.textContent = itemName.trim().charAt(0).toUpperCase();
+      const details = document.createElement('div');
+      details.className = 'bag-drawer-item-copy';
+      const name = document.createElement('strong');
+      name.textContent = itemName;
+      const description = document.createElement('span');
+      description.textContent = item.description || 'Made with comfort and care.';
+      const quantity = document.createElement('span');
+      quantity.textContent = `Qty ${item.quantity} · ${item.price_formatted} each`;
+      details.append(name, description, quantity);
+      const price = document.createElement('strong');
+      price.className = 'bag-drawer-line-total';
+      price.textContent = item.line_total_formatted;
+      row.append(mark, details, price);
+      bagDrawerItems.append(row);
+    });
+    bagDrawerItems.hidden = cart.items.length === 0;
+    bagDrawerEmpty.hidden = cart.items.length !== 0;
+    bagDrawerCount.textContent = `(${cart.item_count} items)`;
+    bagDrawerSubtotal.textContent = cart.subtotal_formatted;
+    bagDrawerMessage.textContent = message;
+  };
+  const closeBagDrawer = () => {
+    if (!bagDrawer || bagDrawer.getAttribute('aria-hidden') === 'true') return;
+    bagDrawer.classList.remove('is-open');
+    bagDrawerBackdrop.classList.remove('is-open');
+    bagDrawer.setAttribute('aria-hidden', 'true');
+    bagDrawer.setAttribute('inert', '');
+    document.body.classList.remove('bag-drawer-lock');
+    window.setTimeout(() => {
+      if (!bagDrawer.classList.contains('is-open')) bagDrawerBackdrop.hidden = true;
+    }, 280);
+    bagDrawerPreviousFocus?.focus();
+  };
+  const openBagDrawer = (cart, message) => {
+    if (!bagDrawer || !bagDrawerBackdrop) return;
+    renderBagDrawer(cart, message);
+    bagDrawerPreviousFocus = document.activeElement;
+    bagDrawerBackdrop.hidden = false;
+    requestAnimationFrame(() => {
+      bagDrawerBackdrop.classList.add('is-open');
+      bagDrawer.classList.add('is-open');
+    });
+    bagDrawer.removeAttribute('inert');
+    bagDrawer.setAttribute('aria-hidden', 'false');
+    document.body.classList.add('bag-drawer-lock');
+    bagDrawerClose.focus();
+  };
+  bagDrawerClose?.addEventListener('click', closeBagDrawer);
+  bagDrawerBackdrop?.addEventListener('click', closeBagDrawer);
+  bagDrawer?.addEventListener('keydown', event => {
+    if (event.key !== 'Tab') return;
+    const focusable = [...bagDrawer.querySelectorAll('a[href], button:not([disabled])')]
+      .filter(element => !element.hidden);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
   const checkoutRadios = [...document.querySelectorAll('input[name="payment_method"]')];
   if (checkoutRadios.length) {
     const syncCheckoutInstrument = () => {
@@ -133,7 +216,7 @@
   document.querySelectorAll('.nav-popover a').forEach(link => link.addEventListener('click', closeNavMenus));
   document.addEventListener('click', event => { if (profileArea && !profileArea.contains(event.target)) closeProfile(); });
   document.addEventListener('click', event => { if (!event.target.closest('.nav-menu-anchor')) closeNavMenus(); });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeMobileNav(); closeProfile(); closeNavMenus(); document.getElementById('preview-dialog')?.close(); } });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') { closeMobileNav(); closeProfile(); closeNavMenus(); closeBagDrawer(); document.getElementById('preview-dialog')?.close(); } });
   document.querySelectorAll('[data-showpiece]:not([data-showpiece="Wishlist"])').forEach(button => button.addEventListener('click', () => { closeProfile(); notify(`${button.dataset.showpiece} will be available soon.`); }));
   document.querySelector('#profile-menu [data-showpiece="Wishlist"]')?.addEventListener('click', event => {
     event.stopPropagation();
@@ -225,7 +308,6 @@
         setBusy(button, true, 'Adding...');
         countNode.textContent = oldCount + 1;
         updateMenuProduct('bag-items', card, productId, true, 1);
-        notify('Added to your bag.');
       } else {
         button.disabled = true;
         button.setAttribute('aria-busy', 'true');
@@ -243,7 +325,11 @@
         if (action === 'cart') {
           countNode.textContent = result.item_count;
           setBagMenuQuantity(productId, result.product_quantity);
-          if (result.product_quantity >= 10) notify('Maximum quantity per item is 10.');
+          const message = result.product_quantity >= 10
+            ? 'Maximum quantity per item is 10.'
+            : `${card.dataset.title} added to your bag.`;
+          notify(message);
+          openBagDrawer(result.cart, message);
         } else {
           button.classList.toggle('is-active', result.active);
           button.setAttribute('aria-pressed', String(result.active));
