@@ -323,8 +323,8 @@ img,svg{max-width:100%}
 .footer-links{display:flex;align-items:center;gap:24px}
 .footer-links a{color:#d8dce4;font-size:12px;font-weight:600}
 .footer-links a:hover{color:#f0cb8c}
-.footer-links .footer-download-button{color:#17130c}
-.footer-links .footer-download-button:hover{color:#17130c}
+.app-download-nav{padding:9px 11px;border:1px solid #756041;border-radius:9px;background:var(--gold);color:#17130c}
+.app-download-nav:hover{background:var(--gold-bright);color:#17130c}
 .footer-bottom{max-width:1500px;margin:auto;padding:18px 36px;display:flex;justify-content:space-between;border-top:1px solid #273143;color:#7f8796;font-size:11px}
 @media(max-width:850px){
   .shop-banner{height:clamp(420px,68vh,620px);margin-bottom:30px;border-radius:12px}
