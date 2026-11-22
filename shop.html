@@ -29,12 +29,12 @@
       <a href="{{ url_for('wishlist_page') }}">Wishlist</a>
       <a href="{{ url_for('bag_page') }}">Bag</a>
       <a href="{{ url_for('orders_page') }}">My Account</a>
+      {% if app_download_available %}
+      <a class="button footer-download-button" href="{{ url_for('static', filename='downloads/rishmora-app.apk') }}" download="Rishmora.apk">Download our app</a>
+      {% endif %}
     </nav>
   </div>
   <div class="footer-bottom">
     <span>&copy; 2026 Rishmora</span>
     <span>Crafted for Comfort</span>
   </div>
-</footer>
-<dialog class="preview-dialog" id="preview-dialog"><button class="dialog-close" type="button" aria-label="Close preview">&times;</button><div class="preview-art"><span id="preview-mark">R</span></div><div class="preview-copy"><p class="eyebrow">RISHMORA / ESSENTIALS</p><h2 id="preview-title"></h2><strong id="preview-price"></strong><p id="preview-description"></p></div></dialog>
-{% endblock %}
