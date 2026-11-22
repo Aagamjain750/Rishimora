@@ -32,6 +32,8 @@ For Supabase URLs using `sslmode=require`, the driver encrypts the connection wi
 
 The Blueprint build command installs dependencies, the start command runs Gunicorn, and `/health` provides the deployment health check.
 
+Keep the `templates/` directory when deploying the project. If using a flattened repository layout, include the root `base.html` alongside the other root-level templates; it must contain the shared layout and must not extend itself.
+
 ## Android app download
 
 Place the signed APK at `static/downloads/rishmora-app.apk`. The shop footer shows **Download our app** only after this file is present. Keep the same path in the GitHub repository before redeploying.
