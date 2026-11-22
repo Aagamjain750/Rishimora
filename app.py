@@ -29,7 +29,10 @@ _flat_static_files = {
     "js/app.js": ("static/js/app.js", "app.js"),
     "img/rishmora-logo.svg": ("static/img/rishmora-logo.svg", "rishmora-logo.svg"),
     "img/shop-banner.png": ("static/img/shop-banner.png", "shop-banner.png"),
-    "downloads/rishmora-app.apk": ("static/downloads/rishmora-app.apk",),
+    "downloads/rishmora-app.apk": (
+        "static/downloads/rishmora-app.apk",
+        "rishmora-app.apk",
+    ),
 }
 app = Flask(
     __name__,
@@ -264,7 +267,7 @@ def inject_csrf_token():
         "csrf_token": csrf_token(),
         "app_download_available": os.path.isfile(
             os.path.join(_app_root, "static", "downloads", "rishmora-app.apk")
-        ),
+        ) or os.path.isfile(os.path.join(_app_root, "rishmora-app.apk")),
     }
 
 
