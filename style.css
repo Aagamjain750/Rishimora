@@ -327,16 +327,32 @@ img,svg{max-width:100%}
 .app-download-nav:hover{background:var(--gold-bright);color:#17130c}
 .footer-bottom{max-width:1500px;margin:auto;padding:18px 36px;display:flex;justify-content:space-between;border-top:1px solid #273143;color:#7f8796;font-size:11px}
 @media(max-width:850px){
-  .shop-banner{height:clamp(420px,68vh,620px);margin-bottom:30px;border-radius:12px}
+  .shop-banner{height:auto;aspect-ratio:2/1;margin-bottom:30px;border-radius:12px}
+  .shop-banner img{object-fit:contain}
 }
 @media(max-width:560px){
-  .shop-banner{height:70vh;min-height:420px;max-height:620px;margin-bottom:24px;border-radius:10px}
-  .shop-banner img{object-position:center}
+  .shop-banner{margin-bottom:24px;border-radius:10px}
   .footer-inner{min-height:0;padding:34px 20px;grid-template-columns:1fr;gap:18px;text-align:center}
   .footer-brand{width:130px;height:78px;margin:auto}
   .footer-inner>p{margin:auto;font-size:12px}
   .footer-links{justify-content:center;flex-wrap:wrap;gap:14px 20px}
   .footer-bottom{padding:16px 20px;gap:12px}
+}
+
+.shop-info-section{max-width:760px;margin:72px auto 0;padding:34px 0;border-top:1px solid #273143;scroll-margin-top:110px}
+.shop-info-section h2{margin:0;font:500 clamp(24px,3vw,34px) Manrope,sans-serif;letter-spacing:-.03em}
+.shop-info-section>p:not(.eyebrow){max-width:680px;margin:14px 0 0;color:var(--muted);font-size:14px;line-height:1.8}
+.contact-links{display:flex;align-items:center;gap:22px;margin-top:22px}
+@media(max-width:1150px){
+  .nav-actions{gap:clamp(7px,1vw,12px)}
+  .nav-content-link{font-size:11px}
+}
+@media(max-width:850px){
+  .nav-actions>.nav-content-link{width:100%;min-height:46px;justify-content:flex-start;padding:8px 10px;font-size:14px}
+  .shop-info-section{margin:52px 10px 0;padding:28px 0}
+}
+@media(max-width:560px){
+  .contact-links{align-items:flex-start;flex-direction:column;gap:16px}
 }
 
 /* Collapsible navigation and horizontal-overflow protection. */
