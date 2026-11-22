@@ -7,7 +7,7 @@
   <section class="shop-banner" aria-label="Rishmora featured collection">
     <img src="{{ url_for('static', filename='img/shop-banner.png') }}" alt="Rishmora - Crafted for Comfort">
   </section>
-  <section class="shop-intro"><div><p class="eyebrow">THE RISHMORA EDIT</p><h1>Everyday, considered.</h1><p class="muted">Thoughtful essentials crafted for lasting comfort.</p></div><span class="product-total">{{ products|length }} pieces</span></section>
+  <section class="shop-intro" id="shop"><div><p class="eyebrow">THE RISHMORA EDIT</p><h1>Shop</h1><p class="muted">Thoughtful essentials crafted for lasting comfort.</p></div><span class="product-total">{{ products|length }} pieces</span></section>
   <section class="product-grid" id="product-grid" aria-label="Products">
     {% for product in products %}
     <article class="product-card" id="product-{{ product.product_id }}" data-product-card data-name="{{ product.name|lower }}" data-description="{{ (product.description or '')|lower }}" data-title="{{ product.name|e }}" data-price="{{ product.price_formatted }}" data-full-description="{{ product.description or 'Made with comfort and care.'|e }}">
@@ -17,6 +17,20 @@
     {% else %}<div class="empty-state" id="empty-products"><span class="empty-mark">R</span><h2>Your collection is taking shape.</h2><p>Products will appear here as soon as the database is connected.</p></div>{% endfor %}
   </section>
   <section class="empty-state search-empty" id="search-empty" hidden><span class="empty-mark">S</span><h2>No pieces found</h2><p>Try another search or clear your filters.</p><button class="button button-outline" id="empty-reset" type="button">Clear search</button></section>
+  <section class="shop-info-section" id="about-us" aria-labelledby="about-us-title">
+    <p class="eyebrow">OUR STORY</p>
+    <h2 id="about-us-title">About Us</h2>
+    <p>At Rishmora, we believe everyday essentials should feel as considered as they look. We bring together comfort, thoughtful details, and lasting quality for the moments that make a house feel like home.</p>
+  </section>
+  <section class="shop-info-section contact-section" id="contact-us" aria-labelledby="contact-us-title">
+    <p class="eyebrow">WE'RE HERE TO HELP</p>
+    <h2 id="contact-us-title">Contact Us</h2>
+    <p>Questions about an order or product? Reach out and we’ll be happy to help.</p>
+    <div class="contact-links">
+      <a class="button" href="https://wa.me/918319143930" target="_blank" rel="noopener noreferrer">Chat on WhatsApp</a>
+      <a class="text-link" href="https://www.instagram.com/rishmoraofficial?utm_source=ig_web_button_share_sheet&amp;gwpx=ZDNlZDc0MzIxNw==" target="_blank" rel="noopener noreferrer">Instagram</a>
+    </div>
+  </section>
 </main>
 <footer class="site-footer">
   <div class="footer-inner">
@@ -29,9 +43,6 @@
       <a href="{{ url_for('wishlist_page') }}">Wishlist</a>
       <a href="{{ url_for('bag_page') }}">Bag</a>
       <a href="{{ url_for('orders_page') }}">My Account</a>
-      {% if app_download_available %}
-      <a class="button footer-download-button" href="{{ url_for('static', filename='downloads/rishmora-app.apk') }}" download="Rishmora.apk">Download our app</a>
-      {% endif %}
     </nav>
   </div>
   <div class="footer-bottom">
