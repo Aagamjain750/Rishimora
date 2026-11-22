@@ -23,6 +23,7 @@ For Supabase URLs using `sslmode=require`, the driver encrypts the connection wi
 5. Keep `PGSSLMODE=require` for the hosted PostgreSQL connection.
 6. Apply the SQL files once to Supabase in this order:
    - `schema.sql`
+   - `phone_auth_migration.sql`
    - `profile_tables.sql`
    - `cart_quantity_limit.sql`
    - `checkout_order_columns.sql`
