@@ -13,7 +13,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from html import escape
 from urllib.parse import parse_qs, unquote, urlparse
 
-from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 from jinja2 import TemplateNotFound
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
@@ -21,7 +21,28 @@ from pg8000.dbapi import connect as pg_connect
 
 load_dotenv()
 
-app = Flask(__name__)
+_app_root = os.path.dirname(os.path.abspath(__file__))
+_templates_dir = os.path.join(_app_root, "templates")
+_static_dir = os.path.join(_app_root, "static")
+_flat_static_files = {
+    "css/style.css": "style.css",
+    "js/app.js": "app.js",
+    "img/rishmora-logo.svg": "rishmora-logo.svg",
+    "img/shop-banner.png": "shop-banner.png",
+}
+app = Flask(
+    __name__,
+    template_folder=_templates_dir if os.path.isdir(_templates_dir) else _app_root,
+    static_folder=_static_dir if os.path.isdir(_static_dir) else None,
+)
+if app.static_folder is None:
+    @app.get("/static/<path:filename>", endpoint="static")
+    def serve_flat_static_file(filename):
+        mapped_filename = _flat_static_files.get(filename)
+        if mapped_filename is None:
+            abort(404)
+        return send_from_directory(_app_root, mapped_filename)
+
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 _production = (
