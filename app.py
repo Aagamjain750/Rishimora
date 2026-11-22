@@ -10,10 +10,11 @@ import uuid
 import re
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
+from html import escape
 from urllib.parse import parse_qs, unquote, urlparse
 
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
-from werkzeug.security import check_password_hash, generate_password_hash
+from jinja2 import TemplateNotFound
 from werkzeug.middleware.proxy_fix import ProxyFix
 from dotenv import load_dotenv
 from pg8000.dbapi import connect as pg_connect
@@ -367,72 +368,107 @@ def home():
     return redirect(url_for("shop") if session.get("user_id") else url_for("login"))
 
 
+def render_mobile_login(otp_step=False, mobile=""):
+    try:
+        return render_template("login.html", otp_step=otp_step, mobile=mobile)
+    except TemplateNotFound:
+        token = escape(csrf_token())
+        safe_mobile = escape(mobile)
+        if otp_step:
+            body = f"""
+            <label for="otp">One-time password</label>
+            <input id="otp" name="otp" type="text" inputmode="numeric" maxlength="4" pattern="[0-9]{{4}}" placeholder="Enter 1234" required>
+            <input type="hidden" name="action" value="verify_otp">
+            <button type="submit">Verify &amp; continue</button>
+            <p>Mobile: {safe_mobile}</p>
+            """
+            heading = "Enter your OTP"
+        else:
+            body = f"""
+            <label for="mobile">Mobile number</label>
+            <input id="mobile" name="mobile" type="tel" inputmode="tel" maxlength="16" pattern="[0-9 +() -]{{10,16}}" placeholder="10-digit mobile number" required>
+            <input type="hidden" name="action" value="request_otp">
+            <button type="submit">Continue</button>
+            """
+            heading = "Continue with mobile"
+        return f"""
+        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <meta name="csrf-token" content="{token}"><title>Rishmora - Sign in</title></head>
+        <body><main><h1>{heading}</h1>
+        <form method="post"><input type="hidden" name="csrf_token" value="{token}">{body}</form>
+        </main></body></html>
+        """, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if session.get("user_id"):
         return redirect(url_for("shop"))
+    if request.method == "GET":
+        session.pop("otp_mobile", None)
+        session.pop("otp_verified", None)
     if request.method == "POST":
-        # Expected optional account table: user_account(username, password_hash, user_id).
-        username = request.form.get("username", "").strip().lower()
-        password = request.form.get("password", "")
-        db = get_db()
-        try:
-            if db and 1 <= len(username) <= 254 and password and len(password) <= 1024:
+        action = request.form.get("action", "request_otp")
+
+        if action == "request_otp":
+            raw_mobile = request.form.get("mobile", "").strip()
+            digits = re.sub(r"\D", "", raw_mobile)
+            if len(digits) == 12 and digits.startswith("91"):
+                digits = digits[2:]
+            if not re.fullmatch(r"[6-9][0-9]{9}", digits):
+                flash("Enter a valid 10-digit Indian mobile number.", "error")
+                return render_mobile_login(otp_step=False)
+
+            session["otp_mobile"] = digits
+            session["otp_verified"] = False
+            flash("OTP sent. For testing, use 1234.", "success")
+            return render_mobile_login(otp_step=True, mobile=digits)
+
+        if action == "verify_otp":
+            digits = session.get("otp_mobile", "")
+            otp = request.form.get("otp", "").strip()
+            if not digits:
+                flash("Enter your mobile number first.", "error")
+                return render_mobile_login(otp_step=False)
+            if otp != "1234":
+                flash("Invalid OTP. Use 1234 for testing.", "error")
+                return render_mobile_login(otp_step=True, mobile=digits)
+
+            db = get_db()
+            if db is None:
+                flash("Sign-in is temporarily unavailable.", "error")
+                return render_mobile_login(otp_step=True, mobile=digits)
+            try:
                 with db.cursor() as cur:
-                    cur.execute("SELECT user_id, password_hash FROM user_account WHERE username = %s", (username,))
+                    cur.execute(
+                        "SELECT user_id::text FROM user_account WHERE user_id::text = %s OR username = %s LIMIT 1",
+                        (digits, digits),
+                    )
                     record = cur.fetchone()
-                if record and check_password_hash(record[1], password):
-                    session.clear()
-                    session["user_id"] = str(record[0])
-                    csrf_token()
-                    return redirect(url_for("shop"))
-        except Exception:
-            app.logger.exception("Login lookup failed")
-            if db:
+                    if record is None:
+                        cur.execute(
+                            "INSERT INTO user_account (user_id, username, password_hash, mobile) "
+                            "VALUES (%s, %s, %s, %s) RETURNING user_id::text",
+                            (digits, digits, "", digits),
+                        )
+                        record = cur.fetchone()
+                db.commit()
+                session.clear()
+                session["user_id"] = str(record[0])
+                csrf_token()
+                return redirect(url_for("shop"))
+            except Exception:
                 db.rollback()
-        flash("We couldn't sign you in with those details. Please try again.", "error")
-    return render_template("login.html")
+                app.logger.exception("Mobile OTP account lookup failed")
+                flash("We couldn't sign you in. Please try again.", "error")
+                return render_mobile_login(otp_step=True, mobile=digits)
+    return render_mobile_login(otp_step=bool(session.get("otp_mobile")),
+                               mobile=session.get("otp_mobile", ""))
 
 
 @app.route("/signup", methods=["GET", "POST"])
 def signup():
-    if session.get("user_id"):
-        return redirect(url_for("shop"))
-    if request.method == "POST":
-        username = request.form.get("username", "").strip().lower()
-        password = request.form.get("password", "")
-        confirmation = request.form.get("confirm_password", "")
-        if (not username or len(username) > 254 or any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in username)):
-            flash("Enter a valid email or username.", "error")
-        elif len(password) < 8 or len(password) > 1024:
-            flash("Choose a password between 8 and 1,024 characters.", "error")
-        elif password != confirmation:
-            flash("The passwords do not match.", "error")
-        else:
-            db = get_db()
-            if db is None:
-                flash("Account creation is temporarily unavailable.", "error")
-            else:
-                try:
-                    with db.cursor() as cur:
-                        cur.execute("""INSERT INTO user_account (username, password_hash)
-                            VALUES (%s, %s) RETURNING user_id""",
-                            (username, generate_password_hash(password)))
-                        user_id = cur.fetchone()[0]
-                    db.commit()
-                    session.clear()
-                    session["user_id"] = str(user_id)
-                    csrf_token()
-                    return redirect(url_for("shop"))
-                except Exception as exc:
-                    db.rollback()
-                    # Do not expose SQL details; identify duplicate usernames cleanly.
-                    if getattr(exc, "sqlstate", None) == "23505":
-                        flash("An account with that email or username already exists.", "error")
-                    else:
-                        app.logger.exception("Account creation failed")
-                        flash("We couldn't create your account right now. Please try again.", "error")
-    return render_template("signup.html")
+    return redirect(url_for("login"))
 
 
 @app.route("/logout", methods=["POST"])
