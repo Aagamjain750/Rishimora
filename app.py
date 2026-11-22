@@ -1050,9 +1050,25 @@ def add_to_cart():
             cur.execute("SELECT COALESCE(SUM(quantity), 0) FROM cart WHERE user_id = %s",
                         (session["user_id"],))
             item_count = cur.fetchone()[0]
+        cart = get_bag_page_data(session["user_id"])
+        drawer_cart = {
+            "items": [
+                {
+                    "product_id": str(item["product_id"]),
+                    "name": item["name"],
+                    "description": item["description"],
+                    "price_formatted": item["price_formatted"],
+                    "quantity": item["quantity"],
+                    "line_total_formatted": item["line_total_formatted"],
+                }
+                for item in cart["items"]
+            ],
+            "item_count": cart["item_count"],
+            "subtotal_formatted": cart["subtotal_formatted"],
+        }
         db.commit()
         return jsonify(item_count=item_count, product_quantity=product_quantity,
-                       message="Added to your bag.")
+                       message="Added to your bag.", cart=drawer_cart)
     except (TypeError, ValueError):
         return jsonify(error="Invalid product request."), 400
     except Exception:
