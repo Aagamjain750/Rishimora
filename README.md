@@ -31,3 +31,7 @@ For Supabase URLs using `sslmode=require`, the driver encrypts the connection wi
    - `seed_100_products.sql`
 
 The Blueprint build command installs dependencies, the start command runs Gunicorn, and `/health` provides the deployment health check.
+
+## Android app download
+
+Place the signed APK at `static/downloads/rishmora-app.apk`. The shop footer shows **Download our app** only after this file is present. Keep the same path in the GitHub repository before redeploying.
