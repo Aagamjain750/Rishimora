@@ -25,23 +25,32 @@ _app_root = os.path.dirname(os.path.abspath(__file__))
 _templates_dir = os.path.join(_app_root, "templates")
 _static_dir = os.path.join(_app_root, "static")
 _flat_static_files = {
-    "css/style.css": "style.css",
-    "js/app.js": "app.js",
-    "img/rishmora-logo.svg": "rishmora-logo.svg",
-    "img/shop-banner.png": "shop-banner.png",
+    "css/style.css": ("static/css/style.css", "style.css"),
+    "js/app.js": ("static/js/app.js", "app.js"),
+    "img/rishmora-logo.svg": ("static/img/rishmora-logo.svg", "rishmora-logo.svg"),
+    "img/shop-banner.png": ("static/img/shop-banner.png", "shop-banner.png"),
+    "downloads/rishmora-app.apk": ("static/downloads/rishmora-app.apk",),
 }
 app = Flask(
     __name__,
     template_folder=_templates_dir if os.path.isdir(_templates_dir) else _app_root,
-    static_folder=_static_dir if os.path.isdir(_static_dir) else None,
+    static_folder=None,
 )
-if app.static_folder is None:
-    @app.get("/static/<path:filename>", endpoint="static")
-    def serve_flat_static_file(filename):
-        mapped_filename = _flat_static_files.get(filename)
-        if mapped_filename is None:
-            abort(404)
-        return send_from_directory(_app_root, mapped_filename)
+
+
+@app.get("/static/<path:filename>", endpoint="static")
+def serve_static_file(filename):
+    mapped_files = _flat_static_files.get(filename)
+    if mapped_files is None:
+        abort(404)
+    for mapped_file in mapped_files:
+        if os.path.isfile(os.path.join(_app_root, mapped_file)):
+            if filename == "downloads/rishmora-app.apk":
+                return send_from_directory(
+                    _app_root, mapped_file, as_attachment=True, download_name="Rishmora.apk"
+                )
+            return send_from_directory(_app_root, mapped_file)
+    abort(404)
 
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -251,7 +260,12 @@ def add_security_headers(response):
 def inject_csrf_token():
     # Templates use {{ csrf_token }} so the same session token reaches both
     # regular POST forms and JavaScript fetch requests.
-    return {"csrf_token": csrf_token()}
+    return {
+        "csrf_token": csrf_token(),
+        "app_download_available": os.path.isfile(
+            os.path.join(_app_root, "static", "downloads", "rishmora-app.apk")
+        ),
+    }
 
 
 @app.before_request
