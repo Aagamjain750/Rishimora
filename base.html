@@ -1,41 +1,101 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="csrf-token" content="{{ csrf_token }}">
-  <title>{% block title %}Rishmora — Crafted for Comfort{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='mobile-fit-12') }}">
-  {% block head %}{% endblock %}
-</head>
-<body class="{% block body_class %}{% endblock %}">
-  {% block content %}{% endblock %}
-  {% if session.get('user_id') %}
-  <div class="bag-drawer-backdrop" id="bag-drawer-backdrop" hidden></div>
-  <aside class="bag-drawer" id="bag-drawer" role="dialog" aria-modal="true"
-         aria-labelledby="bag-drawer-title" aria-hidden="true" inert>
-    <header class="bag-drawer-header">
-      <div>
-        <p class="eyebrow">RISHMORA / YOUR ORDER</p>
-        <h2 id="bag-drawer-title">Your Bag <span id="bag-drawer-count"></span></h2>
-      </div>
-      <button class="bag-drawer-close" id="bag-drawer-close" type="button" aria-label="Close bag">&times;</button>
-    </header>
-    <p class="bag-drawer-message" id="bag-drawer-message" role="status" aria-live="polite"></p>
-    <div class="bag-drawer-content">
-      <ul class="bag-drawer-items" id="bag-drawer-items" aria-label="Items in your bag"></ul>
-      <p class="bag-drawer-empty" id="bag-drawer-empty" hidden>Your bag is empty.</p>
+{% extends "base.html" %}
+{% block title %}Shop &mdash; Rishmora{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="shop-main">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  <section class="shop-banner" id="shop-banner" aria-label="Rishmora featured collection">
+    <img src="{{ url_for('static', filename='img/shop-banner.png') }}" alt="Rishmora - Crafted for Comfort">
+  </section>
+  <section class="shop-intro" id="shop"><div><p class="eyebrow">THE RISHMORA EDIT</p><h1>Shop</h1><p class="muted">Thoughtful essentials crafted for lasting comfort.</p></div><span class="product-total">{{ products|length }} pieces</span></section>
+  <section class="product-grid" id="product-grid" aria-label="Products">
+    {% for product in products %}
+    <article class="product-card" id="product-{{ product.product_id }}" data-product-card data-name="{{ product.name|lower }}" data-description="{{ (product.description or '')|lower }}" data-title="{{ product.name|e }}" data-price="{{ product.price_formatted }}" data-full-description="{{ product.description or 'Made with comfort and care.'|e }}">
+      <a class="product-media" href="{{ url_for('product_detail_page', prid=product.product_id) }}" aria-label="View {{ product.name|e }}"><span class="media-monogram">{{ product.name[:1]|upper }}</span><span class="media-caption">RISHMORA / ESSENTIALS</span><span class="media-index">{{ '%02d'|format(loop.index) }}</span></a>
+      <div class="product-info"><a href="{{ url_for('product_detail_page', prid=product.product_id) }}" class="product-title" title="{{ product.name }}">{{ product.name }}</a><p class="product-description">{{ product.description or 'Made with comfort and care.' }}</p><div class="product-bottom"><strong>{{ product.price_formatted }}</strong><div class="card-actions"><button class="icon-button wishlist-button {% if product.product_id|string in wishlist %}is-active{% endif %}" type="button" data-action="wishlist" data-product-id="{{ product.product_id }}" aria-label="Add {{ product.name|e }} to wishlist" aria-pressed="{{ 'true' if product.product_id|string in wishlist else 'false' }}"><svg class="heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.3 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"/></svg></button><button class="button button-small" type="button" data-action="cart" data-product-id="{{ product.product_id }}"><span class="button-label">Add to bag</span><span class="spinner" aria-hidden="true"></span></button></div></div></div>
+    </article>
+    {% else %}<div class="empty-state" id="empty-products"><span class="empty-mark">R</span><h2>Your collection is taking shape.</h2><p>Products will appear here as soon as the database is connected.</p></div>{% endfor %}
+  </section>
+  <section class="empty-state search-empty" id="search-empty" hidden><span class="empty-mark">S</span><h2>No pieces found</h2><p>Try another search or clear your filters.</p><button class="button button-outline" id="empty-reset" type="button">Clear search</button></section>
+  <section class="shop-info-section" id="about-us" aria-labelledby="about-us-title">
+    <p class="eyebrow">OUR STORY</p>
+    <h2 id="about-us-title">About Us</h2>
+    <p>At Rishmora, we believe everyday essentials should feel as considered as they look. We bring together comfort, thoughtful details, and lasting quality for the moments that make a house feel like home.</p>
+  </section>
+  <section class="shop-info-section contact-section" id="contact-us" aria-labelledby="contact-us-title">
+    <p class="eyebrow">WE'RE HERE TO HELP</p>
+    <h2 id="contact-us-title">Contact Us</h2>
+    <p>Questions about an order or product? Reach out and we’ll be happy to help.</p>
+    <div class="contact-links">
+      <a class="button" href="https://wa.me/918319143930" target="_blank" rel="noopener noreferrer">Chat on WhatsApp</a>
+      <a class="text-link" href="https://www.instagram.com/rishmoraofficial?utm_source=ig_web_button_share_sheet&amp;gwpx=ZDNlZDc0MzIxNw==" target="_blank" rel="noopener noreferrer">Instagram</a>
     </div>
-    <footer class="bag-drawer-footer">
-      <div class="bag-drawer-subtotal"><span>Subtotal</span><strong id="bag-drawer-subtotal"></strong></div>
-      <a class="button button-gold bag-drawer-checkout" href="{{ url_for('checkout_page') }}">Continue to checkout</a>
-      <a class="bag-drawer-view" href="{{ url_for('bag_page') }}">View full bag</a>
-    </footer>
-  </aside>
-    {% include "_chat_widget.html" %}
-  {% endif %}
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='js/app.js', v='mobile-fit-6') }}" defer></script>
-  {% block scripts %}{% endblock %}
-</body>
-</html>
+  </section>
+</main>
+<footer class="site-footer">
+  <section class="footer-trust" aria-labelledby="footer-trust-title">
+    <div class="footer-proof-inner">
+      <h2 id="footer-trust-title">Why families keep coming back</h2>
+      <div class="footer-proof-grid">
+        <article class="footer-proof-item">
+          <span class="footer-proof-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 2.8 14.5 5l3.3-.1.9 3.2 2.7 2-1.3 3.1.7 3.2-3 1.4-1.6 2.9-3.2-.8-3.2.8-1.6-2.9-3-1.4.7-3.2-1.3-3.1 2.7-2 .9-3.2 3.3.1L12 2.8Z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <h3>Trusted Since 1986</h3>
+          <p>Three generations serving Ahmedabad families.</p>
+        </article>
+        <article class="footer-proof-item">
+          <span class="footer-proof-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20.5 3.5C12 3.5 6 6.2 6 12.2a5.8 5.8 0 0 0 5.8 5.8c6 0 8.7-6 8.7-14.5Z"/><path d="M4 21c2-5 5-8 10-11"/></svg></span>
+          <h3>Genuine Brands</h3>
+          <p>Sourced from authorised brand partners only.</p>
+        </article>
+        <article class="footer-proof-item">
+          <span class="footer-proof-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 6h11v12H3zM14 10h4l3 3v5h-7z"/><circle cx="7.5" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/><path d="M17 10v3h4"/></svg></span>
+          <h3>We Deliver Locally</h3>
+          <p>Ahmedabad orders delivered by our own team.</p>
+        </article>
+        <article class="footer-proof-item">
+          <span class="footer-proof-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v11H9l-5 3v-14Z"/><path d="M8 10h8M8 13h5"/></svg></span>
+          <h3>Sizing Help on WhatsApp</h3>
+          <p>Unsure of the size? Message us before you buy.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+  <section class="footer-reviews" aria-labelledby="footer-reviews-title">
+    <div class="footer-review-inner">
+      <h2 id="footer-reviews-title">What Our Customers Say</h2>
+      {% if footer_reviews %}
+      <div class="footer-review-grid">
+        {% for review in footer_reviews %}
+        <article class="footer-review-card">
+          <div class="footer-review-stars" aria-label="{{ review.rating }} out of 5 stars">{% for _ in range(review.rating) %}★{% endfor %}{% for _ in range(5 - review.rating) %}<span>★</span>{% endfor %}</div>
+          <h3>{{ review.title or review.product_name }}</h3>
+          <p class="footer-review-copy">{{ review.text }}</p>
+          <p class="footer-review-meta">Rishmora customer{% if review.created_at %}<span aria-hidden="true">&middot;</span> {{ review.created_at.strftime('%d %b %Y') }}{% endif %}</p>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="footer-review-empty">Customer reviews will appear here once they are shared.</p>
+      {% endif %}
+      <div class="footer-review-dots" aria-hidden="true"><span class="active"></span><span></span><span></span></div>
+    </div>
+  </section>
+  <div class="footer-inner">
+    <a class="footer-brand" href="{{ url_for('shop') }}" aria-label="Rishmora home">
+      <img src="{{ url_for('static', filename='img/rishmora-logo.svg') }}" alt="Rishmora">
+    </a>
+    <p>Thoughtful essentials crafted for lasting comfort.</p>
+    <nav class="footer-links" aria-label="Footer navigation">
+      <a href="{{ url_for('shop') }}">Shop</a>
+      <a href="{{ url_for('wishlist_page') }}">Wishlist</a>
+      <a href="{{ url_for('bag_page') }}">Bag</a>
+      <a href="{{ url_for('orders_page') }}">My Account</a>
+    </nav>
+  </div>
+  <div class="footer-bottom">
+    <span>&copy; 2026 Rishmora</span>
+    <span>Crafted for Comfort</span>
+  </div>
+</footer>
+<dialog class="preview-dialog" id="preview-dialog"><button class="dialog-close" type="button" aria-label="Close preview">&times;</button><div class="preview-art"><span id="preview-mark">R</span></div><div class="preview-copy"><p class="eyebrow">RISHMORA / ESSENTIALS</p><h2 id="preview-title"></h2><strong id="preview-price"></strong><p id="preview-description"></p></div></dialog>
+{% endblock %}
