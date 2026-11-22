@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — Rishmora{% endblock %}
+{% block body_class %}product-detail-page{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="product-detail-wrap">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  <p class="detail-breadcrumb"><a href="{{ url_for('shop') }}">Home</a><span>/</span><a href="{{ url_for('shop') }}">Shop</a><span>/</span>{{ product.name }}</p>
+  <section class="detail-layout" data-product-card data-name="{{ product.name|lower }}" data-description="{{ product.description|lower }}" data-title="{{ product.name|e }}" data-price="{{ product.price_formatted }}" data-full-description="{{ detail|e }}">
+    <div class="detail-art"><span>{{ product.name[:1]|upper }}</span><small>RISHMORA / ESSENTIALS</small></div>
+    <div class="detail-main">
+      <p class="detail-brand">RISHMORA</p>
+      <h1>{{ product.name }}</h1>
+      {% if average_rating %}<a class="detail-rating" href="#reviews"><strong>{{ average_rating }} ★</strong><span>{{ review_count }} customer review{{ '' if review_count == 1 else 's' }}</span></a>{% else %}<a class="detail-rating" href="#reviews"><span>Be the first to review this product</span></a>{% endif %}
+      <p class="detail-price">{{ product.price_formatted }}</p>
+      <p class="detail-tax-note">Inclusive of all taxes</p>
+      <section class="detail-highlights" aria-labelledby="highlights-title">
+        <h2 id="highlights-title">Top highlights</h2>
+        {% if highlights %}<ul>{% for highlight in highlights %}<li>{{ highlight }}</li>{% endfor %}</ul>{% else %}<p class="detail-muted">Product highlights will appear here when added.</p>{% endif %}
+      </section>
+      <section class="about-product" aria-labelledby="about-title">
+        <h2 id="about-title">About this item</h2>
+        <div class="product-detail-copy">{{ detail }}</div>
+      </section>
+    </div>
+    <aside class="detail-buy-box">
+      <p class="buy-box-price">{{ product.price_formatted }}</p>
+      <p class="buy-box-delivery">Free delivery on eligible orders</p>
+      <p class="buy-box-stock">In stock</p>
+      <button class="button detail-add-button" type="button" data-action="cart" data-product-id="{{ product.product_id }}"><span class="button-label">Add to Bag</span><span class="spinner" aria-hidden="true"></span></button>
+      <button class="detail-wishlist-button {% if product.product_id|string in wishlist %}is-active{% endif %}" type="button" data-action="wishlist" data-product-id="{{ product.product_id }}" aria-label="Add {{ product.name|e }} to wishlist" aria-pressed="{{ 'true' if product.product_id|string in wishlist else 'false' }}"><svg class="heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.3 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"/></svg> Add to Wishlist</button>
+      <p class="buy-box-note">Secure checkout · Easy returns</p>
+    </aside>
+  </section>
+
+  <section class="reviews-section" id="reviews">
+    <header class="reviews-heading"><div><p class="eyebrow">CUSTOMER VOICES</p><h2>Customer reviews</h2></div><span>{{ review_count }} review{{ '' if review_count == 1 else 's' }}</span></header>
+    {% if review_count > reviews|length %}<p class="detail-muted">Showing the 50 most recent reviews.</p>{% endif %}
+    {% if has_reviewed %}<p class="review-form">You have already reviewed this product. Thanks for sharing your feedback.</p>{% else %}<form class="review-form" method="post" action="{{ url_for('product_detail_page', prid=product.product_id) }}#reviews">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <h3>Write a review</h3>
+      <label for="review-rating">Your rating</label><select id="review-rating" name="rating" required><option value="">Choose a rating</option><option value="5">5 — Excellent</option><option value="4">4 — Very good</option><option value="3">3 — Good</option><option value="2">2 — Fair</option><option value="1">1 — Poor</option></select>
+      <label for="review-title">Review title (optional)</label><input id="review-title" name="title" maxlength="200" placeholder="Sum up your experience">
+      <label for="review-text">Your review</label><textarea id="review-text" name="review_text" maxlength="15000" rows="5" required placeholder="What should other shoppers know?"></textarea>
+      <button class="button button-gold" type="submit">Submit review</button>
+    </form>{% endif %}
+    {% if reviews %}<div class="review-list">{% for review in reviews %}<article class="review-card"><div class="review-stars" aria-label="{{ review.rating }} out of 5 stars">{% for _ in range(review.rating) %}★{% endfor %}{% for _ in range(5 - review.rating) %}<span>★</span>{% endfor %}</div>{% if review.title %}<h3>{{ review.title }}</h3>{% endif %}<p class="review-byline">Rishmora customer · {{ review.created_at.strftime('%d %b %Y') }}</p><p class="review-copy">{{ review.text }}</p></article>{% endfor %}</div>{% else %}<div class="reviews-empty"><h3>No reviews yet</h3><p>Share your experience with this product.</p></div>{% endif %}
+  </section>
+</main>
+{% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Rishmora{% endblock %}
+{% block body_class %}profile-content-page{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="profile-content-wrap saved-details-page">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  <header class="profile-content-heading"><p class="eyebrow">YOUR ACCOUNT</p><h1>{{ title }}</h1><p>Manage your saved {{ 'payment details' if kind in ['upi', 'card'] else 'delivery addresses' }}.</p></header>
+  <div class="saved-details-layout">
+    <section class="saved-records">
+      {% if kind == 'upi' %}
+        {% for row in records %}<article class="saved-record"><div><h2>{{ row[1] }}</h2><p>{{ row[2] }}</p></div><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="record_id" value="{{ row[0] }}"><button class="text-button" type="submit">Remove</button></form></article>{% endfor %}
+      {% elif kind == 'address' %}
+        {% for row in records %}<article class="saved-record"><div><h2>{{ row[1] }} · {{ row[2] }}</h2><p>{{ row[3] }}<br>{{ row[4] }}{% if row[5] %}, {{ row[5] }}{% endif %}<br>{{ row[6] }}, {{ row[7] }} {{ row[8] }}</p></div><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="record_id" value="{{ row[0] }}"><button class="text-button" type="submit">Remove</button></form></article>{% endfor %}
+      {% else %}
+        {% for row in records %}<article class="saved-record"><div><h2>{{ row[1] }} · {{ row[2] }} ending {{ row[3] }}</h2><p>Expires {{ '%02d'|format(row[4]) }}/{{ row[5] }}</p></div><form method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="record_id" value="{{ row[0] }}"><button class="text-button" type="submit">Remove</button></form></article>{% endfor %}
+      {% endif %}
+      {% if not records %}<div class="profile-empty saved-empty"><h2>No saved {{ 'UPI IDs' if kind == 'upi' else ('addresses' if kind == 'address' else 'cards') }} yet</h2><p>Add one using the form.</p></div>{% endif %}
+    </section>
+    <form class="profile-form" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <h2>{% if kind == 'address' %}Add an address{% else %}Add {{ 'UPI ID' if kind == 'upi' else 'card details' }}{% endif %}</h2>
+      {% if kind == 'upi' %}
+        <label for="label">Label</label><input id="label" name="label" maxlength="60" placeholder="Personal UPI" required>
+        <label for="vpa">UPI ID</label><input id="vpa" name="vpa" autocomplete="off" placeholder="name@bank" required>
+        <p class="form-hint">Never enter your UPI PIN here.</p>
+      {% elif kind == 'address' %}
+        <label for="label">Address label</label><input id="label" name="label" maxlength="60" placeholder="Home" required>
+        <label for="recipient_name">Full name</label><input id="recipient_name" name="recipient_name" maxlength="120" required>
+        <label for="phone">Phone</label><input id="phone" name="phone" maxlength="30" autocomplete="tel" required>
+        <label for="address_line1">Address</label><input id="address_line1" name="address_line1" maxlength="250" autocomplete="address-line1" required>
+        <label for="address_line2">Apartment, suite, etc. (optional)</label><input id="address_line2" name="address_line2" maxlength="250" autocomplete="address-line2">
+        <div class="profile-form-row"><div><label for="city">City</label><input id="city" name="city" maxlength="100" autocomplete="address-level2" required></div><div><label for="state">State</label><input id="state" name="state" maxlength="100" autocomplete="address-level1" required></div></div>
+        <label for="postal_code">PIN code</label><input id="postal_code" name="postal_code" maxlength="20" autocomplete="postal-code" required>
+      {% else %}
+        <label for="label">Card label</label><input id="label" name="label" maxlength="60" placeholder="Personal card" required>
+        <label for="brand">Card network</label><select id="brand" name="brand" required><option value="">Select network</option><option>Visa</option><option>Mastercard</option><option>RuPay</option><option>American Express</option><option>Other</option></select>
+        <label for="last_four">Last four digits</label><input id="last_four" name="last_four" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off" required>
+        <div class="profile-form-row"><div><label for="expiry_month">Expiry month</label><select id="expiry_month" name="expiry_month" required><option value="">MM</option>{% for month in range(1, 13) %}<option value="{{ month }}">{{ '%02d'|format(month) }}</option>{% endfor %}</select></div><div><label for="expiry_year">Expiry year</label><input id="expiry_year" name="expiry_year" type="number" min="{{ current_year }}" max="9999" placeholder="YYYY" required></div></div>
+        <p class="form-hint">Only card label, network, last four digits, and expiry are saved. Never enter a full card number or CVV. Reusable payments need a payment gateway token.</p>
+      {% endif %}
+      <button class="button button-gold" type="submit">Save details</button>
+    </form>
+  </div>
+</main>
+{% endblock %}

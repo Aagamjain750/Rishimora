@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Wishlist — Rishmora{% endblock %}
+{% block body_class %}myntra-page wishlist-page-body{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="collection-page">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  <section class="myntra-page-heading"><div><h1>My Wishlist <span>(<span id="wishlist-page-count">{{ products|length }}</span>)</span></h1><p>Your saved styles, all in one place.</p></div><a href="{{ url_for('shop') }}">Continue shopping</a></section>
+  <section class="collection-grid" id="wishlist-page-grid" {% if not products %}hidden{% endif %} aria-label="Wishlist products">
+    {% for product in products %}
+    <article class="product-card wishlist-page-card myntra-wish-card" data-product-card data-name="{{ product.name|lower }}" data-description="{{ product.description|lower }}" data-title="{{ product.name|e }}" data-price="{{ product.price_formatted }}" data-full-description="{{ product.description|e }}">
+      <div class="product-media" role="button" tabindex="0" data-preview aria-label="View {{ product.name|e }}"><span class="media-monogram">{{ product.name[:1]|upper }}</span><span class="media-caption">RISHMORA</span></div>
+      <button class="wishlist-remove is-active" type="button" data-action="wishlist" data-product-id="{{ product.product_id }}" aria-label="Remove {{ product.name|e }} from wishlist" aria-pressed="true"><svg class="heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.3 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"/></svg></button>
+      <div class="product-info"><p class="wish-brand">RISHMORA</p><a href="{{ url_for('product_detail_page', prid=product.product_id) }}" class="product-title" title="{{ product.name }}">{{ product.name }}</a><p class="product-description">{{ product.description }}</p><strong class="wish-price">{{ product.price_formatted }}</strong><button class="button button-small wish-add-button" type="button" data-action="cart" data-product-id="{{ product.product_id }}"><span class="button-label">Add to Bag</span><span class="spinner" aria-hidden="true"></span></button></div>
+    </article>
+    {% endfor %}
+  </section>
+  <section class="empty-state collection-empty" id="wishlist-page-empty" {% if products %}hidden{% endif %}><span class="empty-mark">R</span><h2>Your wishlist is empty</h2><p>Save the pieces you love and find them here.</p><a class="button button-gold" href="{{ url_for('shop') }}">Explore the collection</a></section>
+</main>
+<dialog class="preview-dialog" id="preview-dialog"><button class="dialog-close" type="button" aria-label="Close preview">&times;</button><div class="preview-art"><span id="preview-mark">R</span></div><div class="preview-copy"><p class="eyebrow">RISHMORA / ESSENTIALS</p><h2 id="preview-title"></h2><strong id="preview-price"></strong><p id="preview-description"></p></div></dialog>
+{% endblock %}

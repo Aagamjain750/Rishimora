@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Checkout — Rishmora{% endblock %}
+{% block body_class %}checkout-page{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="checkout-wrap">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  <header class="checkout-heading"><div><p class="eyebrow">CHECKOUT</p><h1>Review your order</h1></div><span>{{ cart.item_count }} item{{ '' if cart.item_count == 1 else 's' }}</span></header>
+  <form method="post" class="checkout-layout">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="checkout-main">
+      <section class="checkout-section">
+        <div class="checkout-section-heading"><h2>1. Delivery address</h2><a href="{{ url_for('saved_address_page') }}">Manage addresses</a></div>
+        {% if addresses %}
+          <div class="checkout-addresses">{% for address in addresses %}<label class="checkout-choice checkout-address"><input type="radio" name="address_id" value="{{ address.id }}" {% if loop.first %}checked{% endif %} required><span class="choice-copy"><strong>{{ address.label }} · {{ address.name }}</strong><span>{{ address.phone }}</span><span>{{ address.line1 }}{% if address.line2 %}, {{ address.line2 }}{% endif %}</span><span>{{ address.city }}, {{ address.state }} {{ address.postal_code }}</span></span></label>{% endfor %}</div>
+        {% else %}
+          <div class="checkout-no-options"><p>No saved delivery address yet.</p><a class="button button-outline" href="{{ url_for('saved_address_page') }}">Add an address</a></div>
+        {% endif %}
+      </section>
+
+      <section class="checkout-section">
+        <div class="checkout-section-heading"><h2>2. Payment method</h2></div>
+        <div class="checkout-payment-options">
+          <label class="checkout-choice payment-choice"><input type="radio" name="payment_method" value="card"><span class="choice-copy"><strong>Credit / Debit Card</strong><span>Choose a saved card</span></span></label>
+          <div class="checkout-instrument" id="card-instrument" hidden>{% if cards %}<label><span class="sr-only">Saved card</span><select name="card_id"><option value="">Select a saved card</option>{% for card in cards %}<option value="{{ card.id }}">{{ card.label }} · {{ card.brand }} ending {{ card.last_four }} · {{ '%02d'|format(card.expiry_month) }}/{{ card.expiry_year }}</option>{% endfor %}</select></label>{% else %}<a class="checkout-manage-link" href="{{ url_for('saved_cards_page') }}">Add a saved card</a>{% endif %}</div>
+
+          <label class="checkout-choice payment-choice"><input type="radio" name="payment_method" value="upi"><span class="choice-copy"><strong>UPI</strong><span>Choose a saved UPI ID</span></span></label>
+          <div class="checkout-instrument" id="upi-instrument" hidden>{% if upis %}<label><span class="sr-only">Saved UPI ID</span><select name="upi_id"><option value="">Select a saved UPI ID</option>{% for upi in upis %}<option value="{{ upi.id }}">{{ upi.label }} · {{ upi.vpa }}</option>{% endfor %}</select></label>{% else %}<a class="checkout-manage-link" href="{{ url_for('saved_upi_page') }}">Add a saved UPI ID</a>{% endif %}</div>
+
+          <label class="checkout-choice payment-choice"><input type="radio" name="payment_method" value="cod" checked><span class="choice-copy"><strong>Cash on Delivery</strong><span>Pay when your order arrives</span></span></label>
+        </div>
+        <p class="checkout-payment-note">Card and UPI orders are saved as payment pending until a payment gateway is connected. No online payment is processed here.</p>
+      </section>
+
+      <section class="checkout-section order-items-section">
+        <div class="checkout-section-heading"><h2>3. Items in your order</h2><a href="{{ url_for('bag_page') }}">Edit bag</a></div>
+        {% for item in cart['items'] %}<article class="checkout-item"><div class="checkout-item-mark">{{ item.name[:1]|upper }}</div><div class="checkout-item-copy"><strong>{{ item.name }}</strong><span>Qty {{ item.quantity }} · {{ item.price_formatted }} each</span></div><strong class="checkout-item-total">{{ item.line_total_formatted }}</strong></article>{% endfor %}
+      </section>
+    </div>
+
+    <aside class="checkout-summary">
+      <h2>PRICE DETAILS</h2>
+      <div class="checkout-summary-row"><span>Subtotal ({{ cart.item_count }} items)</span><strong>{{ cart.subtotal_formatted }}</strong></div>
+      <div class="checkout-summary-row"><span>Delivery</span><strong class="summary-green">FREE</strong></div>
+      <div class="checkout-summary-row"><span>Discount</span><strong>₹0.00</strong></div>
+      <div class="checkout-summary-total"><span>Total payable</span><strong>{{ cart.subtotal_formatted }}</strong></div>
+      <button class="button button-gold checkout-place-button" type="submit" {% if not addresses %}disabled{% endif %}>Place Order</button>
+      {% if not addresses %}<p class="checkout-blocked-note">Add a delivery address to continue.</p>{% endif %}
+      <p class="checkout-secure-note">COD orders are confirmed now. Card/UPI orders remain pending until online payment is available.</p>
+    </aside>
+  </form>
+</main>
+{% endblock %}

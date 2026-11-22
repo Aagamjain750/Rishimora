@@ -1,0 +1,30 @@
+<header class="site-header">
+  <nav class="navbar" aria-label="Main navigation">
+    <a class="home-link" href="{{ url_for('shop') }}">Home</a>
+    <a class="nav-brand" href="{{ url_for('shop') }}" aria-label="Rishmora home"><img src="{{ url_for('static', filename='img/rishmora-logo.svg') }}" alt="Rishmora"></a>
+    <button class="nav-burger" id="nav-burger" type="button" aria-label="Open navigation menu" aria-controls="nav-mobile-menu" aria-expanded="false"><span></span><span></span><span></span></button>
+    {% if show_search %}
+    <div class="search-wrap"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path></svg><input id="product-search" type="search" value="{{ search_query }}" placeholder="Search for products, brands and more" aria-label="Search products"><button id="clear-search" class="clear-search" type="button" aria-label="Clear search" hidden>&times;</button></div>
+    {% endif %}
+    <div class="nav-mobile-menu" id="nav-mobile-menu">
+      <a class="mobile-menu-home" href="{{ url_for('shop') }}">Home</a>
+      <div class="nav-actions">
+      <a class="nav-trigger" href="{{ url_for('wishlist_page') }}"><svg class="nav-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.3 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"/></svg><span>Wishlist</span><span class="count-pill" id="wishlist-count">{{ wishlist_count or '' }}</span></a>
+      <a class="nav-trigger" href="{{ url_for('bag_page') }}"><svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l1 12H4L5 8Z"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg><span>Bag</span><span class="count-pill" id="bag-count">{{ cart_count }}</span></a>
+      <div class="profile-area" id="profile-area">
+        <button class="nav-trigger profile-trigger" id="profile-trigger" type="button" aria-expanded="false" aria-haspopup="true"><svg class="nav-profile" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.7 3.1-5.5 7-5.5s6.4 1.8 7 5.5"/></svg><span>Profile</span></button>
+        <div class="profile-menu" id="profile-menu" hidden>
+          <a href="{{ url_for('orders_page') }}" class="profile-item"><span>O</span>Orders</a>
+          <a href="{{ url_for('wishlist_page') }}" class="profile-item"><span>W</span>Wishlist</a>
+          <button type="button" class="profile-item" data-showpiece="Contact Us"><span>@</span>Contact Us</button>
+          <a href="{{ url_for('credit_page') }}" class="profile-item"><span>C</span>My Credit</a>
+          <a href="{{ url_for('bag_page') }}" class="profile-item"><span>S</span>Your Bag</a>
+          <a href="{{ url_for('saved_upi_page') }}" class="profile-item"><span>U</span>Saved UPI</a>
+          <a href="{{ url_for('saved_address_page') }}" class="profile-item"><span>A</span>Saved Address</a>
+          <a href="{{ url_for('saved_cards_page') }}" class="profile-item"><span>V</span>Saved Cards</a>
+        </div>
+      </div>
+      </div>
+    </div>
+  </nav>
+</header>

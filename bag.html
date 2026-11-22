@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Your Bag — Rishmora{% endblock %}
+{% block body_class %}myntra-page bag-page-body{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="collection-page bag-page">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  <section class="myntra-page-heading bag-heading"><div><h1>My Shopping Bag <span>(<span id="bag-page-count">{{ cart.item_count }}</span> Items)</span></h1></div><div class="checkout-steps"><strong>BAG</strong><i></i><span>ADDRESS</span><i></i><span>PAYMENT</span></div></section>
+  <section class="bag-layout">
+    <div class="bag-main-column">
+      <section class="bag-lines" id="bag-lines" {% if not cart['items'] %}hidden{% endif %} aria-label="Bag products">
+        {% for item in cart['items'] %}
+        <article class="bag-line" data-bag-line data-product-id="{{ item.product_id }}" data-unit-price="{{ item.price }}" data-line-total="{{ item.line_total }}">
+          <div class="bag-line-art"><span>{{ item.name[:1]|upper }}</span></div>
+          <div class="bag-line-copy"><p class="wish-brand">RISHMORA</p><h2><a href="{{ url_for('product_detail_page', prid=item.product_id) }}">{{ item.name }}</a></h2><p class="muted">{{ item.description }}</p><div class="bag-line-options"><div class="bag-quantity"><span>Qty:</span><button class="quantity-increase" type="button" data-cart-increase data-product-id="{{ item.product_id }}" aria-label="Increase quantity of {{ item.name|e }}">+</button><span class="quantity-value">{{ item.quantity }}</span></div><span>{{ item.price_formatted }} each</span></div><strong class="bag-line-total">{{ item.line_total_formatted }}</strong></div>
+          <button class="bag-remove" type="button" data-cart-remove data-product-id="{{ item.product_id }}" aria-label="Remove {{ item.name|e }}">Remove</button>
+        </article>
+        {% endfor %}
+      </section>
+      <section class="empty-state collection-empty" id="bag-page-empty" {% if cart['items'] %}hidden{% endif %}><span class="empty-mark">R</span><h2>Your bag is empty</h2><p>Find something made for your everyday comfort.</p><a class="button button-gold" href="{{ url_for('shop') }}">Explore the collection</a></section>
+    </div>
+    <aside class="bag-summary" id="bag-summary" {% if not cart['items'] %}hidden{% endif %}>
+      <h2>PRICE DETAILS <span>(<span id="summary-item-count">{{ cart.item_count }}</span> Items)</span></h2>
+      <div class="summary-row"><span>Total MRP</span><strong id="summary-mrp">{{ cart.subtotal_formatted }}</strong></div>
+      <div class="summary-row"><span>Discount on MRP</span><strong class="summary-green">—</strong></div>
+      <div class="summary-row"><span>Convenience Fee</span><strong class="summary-green">FREE</strong></div>
+      <div class="summary-row summary-total"><span>Total Amount</span><strong id="bag-subtotal">{{ cart.subtotal_formatted }}</strong></div>
+      <a class="button button-gold checkout-button" href="{{ url_for('checkout_page') }}">Checkout</a>
+    </aside>
+  </section>
+</main>
+{% endblock %}

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{% if page_type == 'orders' %}Orders{% else %}My Credit{% endif %} — Rishmora{% endblock %}
+{% block body_class %}profile-content-page{% endblock %}
+{% block content %}
+{% include "_navbar.html" %}
+<main class="profile-content-wrap">
+  {% with messages = get_flashed_messages(with_categories=true) %}{% for category, message in messages %}<div class="alert {{ category }}" role="alert">{{ message }}</div>{% endfor %}{% endwith %}
+  {% if page_type == 'orders' %}
+    <header class="profile-content-heading"><p class="eyebrow">YOUR ACCOUNT</p><h1>Orders</h1><p>All your Rishmora orders in one place.</p></header>
+    {% if records %}
+      <div class="profile-record-list">{% for order in records %}<article class="profile-record"><div><span class="record-label">ORDER</span><h2>{{ order.title }}</h2><p>{{ order.created_at.strftime('%d %b %Y') }}{% if order.payment_method %} · {{ order.payment_method }}{% endif %}{% if order.payment_label %} · {{ order.payment_label }}{% endif %}</p><p>Payment: {{ order.payment_status }}{% if order.has_cashback %} · Cashback {{ order.cashback }}{% endif %}</p></div><div class="record-meta"><span class="status-chip {% if order.status|lower == 'pending' %}pending-chip{% endif %}">{{ order.status }}</span><strong>{{ order.amount }}</strong></div></article>{% endfor %}</div>
+    {% else %}
+      <section class="profile-empty"><span class="empty-mark">R</span><h2>No orders yet</h2><p>Once an order is confirmed, its details will appear here.</p><a class="button button-gold" href="{{ url_for('shop') }}">Explore the collection</a></section>
+    {% endif %}
+  {% else %}
+    <header class="profile-content-heading"><p class="eyebrow">YOUR ACCOUNT</p><h1>My Credit</h1><p>Store credit and cashback from confirmed orders.</p></header>
+    <section class="credit-balance"><span>AVAILABLE CREDIT</span><strong>{{ balance }}</strong><p>Cashback will be added here after an order is confirmed.</p></section>
+    <section class="credit-history"><h2>Credit history</h2>{% if cashback_count %}<p>{{ cashback_count }} cashback credit{{ '' if cashback_count == 1 else 's' }} recorded.</p>{% else %}<p>No credit activity yet. Your starting balance is ₹0.00.</p>{% endif %}</section>
+  {% endif %}
+</main>
+{% endblock %}

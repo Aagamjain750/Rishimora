@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 500" role="img" aria-labelledby="title desc">
+  <title id="title">Rishmora</title><desc id="desc">Gold R monogram above the Rishmora wordmark and Crafted for Comfort tagline.</desc>
+  <defs><linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f5d39a"/><stop offset=".48" stop-color="#c8954e"/><stop offset="1" stop-color="#f0c77d"/></linearGradient><filter id="shadow" x="-.2" y="-.2" width="1.5" height="1.5"><feDropShadow dx="2" dy="5" stdDeviation="5" flood-color="#000" flood-opacity=".65"/></filter></defs>
+  <g fill="url(#gold)" filter="url(#shadow)"><path d="M222 35 394 132v86l-38 23v-87L222 75z"/><path d="m222 127 39-23v211h-39z"/><path d="m315 229 116 86-31 18-85-62z"/></g>
+  <text x="310" y="399" text-anchor="middle" fill="#f3eee8" font-family="Arial,sans-serif" font-size="51" font-weight="300" letter-spacing="21">RISHMORA</text>
+  <path d="M78 434h74m316 0h74" stroke="#d7ac6b" stroke-width="1.4"/><text x="310" y="444" text-anchor="middle" fill="#e5c187" font-family="Arial,sans-serif" font-size="18" letter-spacing="6.5">CRAFTED FOR COMFORT</text>
+</svg>
