@@ -1,4 +1,4 @@
-﻿{% extends "base.html" %}
+{% extends "base.html" %}
 {% block title %}Shop &mdash; Rishmora{% endblock %}
 {% block content %}
 {% include "_navbar.html" %}
@@ -37,5 +37,4 @@
   </div>
 </footer>
 <dialog class="preview-dialog" id="preview-dialog"><button class="dialog-close" type="button" aria-label="Close preview">&times;</button><div class="preview-art"><span id="preview-mark">R</span></div><div class="preview-copy"><p class="eyebrow">RISHMORA / ESSENTIALS</p><h2 id="preview-title"></h2><strong id="preview-price"></strong><p id="preview-description"></p></div></dialog>
-<form class="logout-form" method="post" action="{{ url_for('logout') }}"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"></form>
 {% endblock %}
