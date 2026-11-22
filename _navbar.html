@@ -9,6 +9,12 @@
     <div class="nav-mobile-menu" id="nav-mobile-menu">
       <a class="mobile-menu-home" href="{{ url_for('shop') }}">Home</a>
       <div class="nav-actions">
+      <a class="nav-trigger nav-content-link" href="{{ url_for('shop') }}#shop">Shop</a>
+      <a class="nav-trigger nav-content-link" href="{{ url_for('shop') }}#about-us">About Us</a>
+      <a class="nav-trigger nav-content-link" href="{{ url_for('shop') }}#contact-us">Contact Us</a>
+      {% if app_download_available %}
+      <a class="nav-trigger app-download-nav" href="{{ url_for('static', filename='downloads/rishmora-app.apk') }}" download="Rishmora.apk" aria-label="Download the Rishmora app"><svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v3h14v-3"/></svg><span>Download app</span></a>
+      {% endif %}
       <a class="nav-trigger" href="{{ url_for('wishlist_page') }}"><svg class="nav-heart" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.8a5.5 5.5 0 0 0-7.8 0L12 5.9l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.3 1.1-1.1a5.5 5.5 0 0 0-.1-7.8Z"/></svg><span>Wishlist</span><span class="count-pill" id="wishlist-count">{{ wishlist_count or '' }}</span></a>
       <a class="nav-trigger" href="{{ url_for('bag_page') }}"><svg class="nav-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h14l1 12H4L5 8Z"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg><span>Bag</span><span class="count-pill" id="bag-count">{{ cart_count }}</span></a>
       <div class="profile-area" id="profile-area">
