@@ -22,6 +22,10 @@
           <a href="{{ url_for('saved_upi_page') }}" class="profile-item"><span>U</span>Saved UPI</a>
           <a href="{{ url_for('saved_address_page') }}" class="profile-item"><span>A</span>Saved Address</a>
           <a href="{{ url_for('saved_cards_page') }}" class="profile-item"><span>V</span>Saved Cards</a>
+          <form class="profile-logout-form" method="post" action="{{ url_for('logout') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="profile-item"><span>↪</span>Logout</button>
+          </form>
         </div>
       </div>
       </div>
