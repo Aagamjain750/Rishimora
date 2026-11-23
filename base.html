@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}Rishmora &mdash; Crafted for Comfort{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='mobile-fit-13') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v='mobile-fit-14') }}">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -35,7 +35,7 @@
     {% include "_chat_widget.html" %}
   {% endif %}
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='js/app.js', v='mobile-fit-7') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/app.js', v='mobile-fit-8') }}" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
