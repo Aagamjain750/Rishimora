@@ -8,6 +8,9 @@ import ssl
 import json
 import uuid
 import re
+import hmac
+import hashlib
+import time
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from html import escape
@@ -55,10 +58,17 @@ def serve_static_file(filename):
             return send_from_directory(_app_root, mapped_file)
     abort(404)
 
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+# Trust forwarded client-IP/protocol headers only behind one explicitly trusted proxy.
+# Never trust X-Forwarded-Host, which can enable host-header poisoning.
+if os.environ.get("TRUST_PROXY", "").lower() in {"1", "true", "yes"}:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=0, x_port=0, x_prefix=0)
+_trusted_hosts = [host.strip() for host in os.environ.get("TRUSTED_HOSTS", "").split(",") if host.strip()]
+if _trusted_hosts:
+    app.config["TRUSTED_HOSTS"] = _trusted_hosts
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 _production = (
-    os.environ.get("FLASK_ENV", "").lower() == "production"
+    any(os.environ.get(name, "").lower() in {"prod", "production"}
+        for name in ("FLASK_ENV", "APP_ENV", "ENVIRONMENT", "ENV"))
     or os.environ.get("RENDER", "").lower() == "true"
 )
 _configured_secret = os.environ.get("FLASK_SECRET_KEY")
@@ -69,8 +79,37 @@ app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = _production or os.environ.get("SESSION_COOKIE_SECURE", "0") == "1"
 app.config["MAX_CONTENT_LENGTH"] = 96 * 1024
+app.config["SESSION_COOKIE_NAME"] = "__Host-rishmora_session" if _production else "rishmora_session"
+app.config["SESSION_REFRESH_EACH_REQUEST"] = False
+app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 8
+# Process-local throttling; use a shared proxy/store limiter for multi-worker deployments.
+_RATE_LIMITS = {
+    "/login": (12, 10 * 60),
+    "/api/chat": (15, 60),
+    "/cart/add": (90, 60),
+    "/cart/remove": (90, 60),
+    "/cart/increase": (90, 60),
+    "/cart/decrease": (90, 60),
+    "/wishlist/toggle": (90, 60),
+    "/search": (60, 60),
+}
+_rate_limit_hits = {}
+_rate_limit_lock = threading.Lock()
 _db_pool = None
 _db_pool_lock = threading.Lock()
+_OTP_TTL_SECONDS = 5 * 60
+_OTP_RESEND_SECONDS = 60
+_OTP_MAX_ATTEMPTS = 5
+_OTP_MAX_CHALLENGES = 5000
+_MAX_CART_LINES = 200
+_MAX_WISHLIST_ITEMS = 500
+_MAX_SAVED_DETAILS = 100
+_MAX_CHAT_SESSIONS = 100
+# OTP state is process-local: worker changes or restarts can lose challenges.
+# A shared store is required for reliable verification across multiple workers.
+_otp_challenges = {}
+_otp_challenge_by_mobile = {}
+_otp_challenges_lock = threading.Lock()
 
 
 class CursorContext:
@@ -100,6 +139,20 @@ class DBConnectionAdapter:
 
 class DatabaseUnavailable(RuntimeError):
     """Raised when the request cannot acquire a PostgreSQL connection."""
+
+
+def postgres_sqlstate(exc):
+    state = getattr(exc, "sqlstate", None)
+    if state:
+        return state
+    payload = getattr(exc, "value", None)
+    if not isinstance(payload, dict):
+        payload = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {}
+    return payload.get("C")
+
+
+def is_missing_relation_error(exc):
+    return postgres_sqlstate(exc) == "42P01"
 
 
 class ConnectionPool:
@@ -225,6 +278,92 @@ def csrf_token():
     return token
 
 
+def otp_digest(mobile, challenge_id, code):
+    secret = app.secret_key
+    if isinstance(secret, str):
+        secret = secret.encode("utf-8")
+    message = f"{mobile}:{challenge_id}:{code}".encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def issue_otp_challenge(mobile):
+    now = time.monotonic()
+    with _otp_challenges_lock:
+        for challenge_id, challenge in list(_otp_challenges.items()):
+            if challenge["expires_at"] <= now:
+                _otp_challenges.pop(challenge_id, None)
+                if _otp_challenge_by_mobile.get(challenge["mobile"]) == challenge_id:
+                    _otp_challenge_by_mobile.pop(challenge["mobile"], None)
+
+        current_id = _otp_challenge_by_mobile.get(mobile)
+        current = _otp_challenges.get(current_id)
+        if current:
+            retry_after = _OTP_RESEND_SECONDS - (now - current["sent_at"])
+            if retry_after > 0:
+                return None, current_id, max(1, int(retry_after + 0.999))
+        elif len(_otp_challenges) >= _OTP_MAX_CHALLENGES:
+            return None, None, None
+
+        code = "123"  # Fixed development OTP requested by the project owner.
+        challenge_id = secrets.token_urlsafe(24)
+        if current_id:
+            _otp_challenges.pop(current_id, None)
+        _otp_challenges[challenge_id] = {
+            "mobile": mobile,
+            "challenge_id": challenge_id,
+            "digest": otp_digest(mobile, challenge_id, code),
+            "sent_at": now,
+            "expires_at": now + _OTP_TTL_SECONDS,
+            "attempts": 0,
+        }
+        _otp_challenge_by_mobile[mobile] = challenge_id
+        return code, challenge_id, 0
+
+
+def get_active_otp_mobile(challenge_id):
+    with _otp_challenges_lock:
+        challenge = _otp_challenges.get(challenge_id)
+        if (not challenge or challenge.get("consumed")
+                or challenge["expires_at"] <= time.monotonic()):
+            return None
+        return challenge["mobile"]
+
+
+def verify_otp_challenge(challenge_id, code):
+    now = time.monotonic()
+    with _otp_challenges_lock:
+        challenge = _otp_challenges.get(challenge_id)
+        if not challenge or not hmac.compare_digest(
+                str(challenge_id or ""), challenge["challenge_id"]):
+            return "expired", 0
+        if challenge["expires_at"] <= now:
+            _otp_challenges.pop(challenge_id, None)
+            if _otp_challenge_by_mobile.get(challenge["mobile"]) == challenge_id:
+                _otp_challenge_by_mobile.pop(challenge["mobile"], None)
+            return "expired", 0
+        if challenge.get("consumed"):
+            return "expired", 0
+        if challenge["attempts"] >= _OTP_MAX_ATTEMPTS:
+            return "locked", 0
+
+        valid = hmac.compare_digest(
+            challenge["digest"], otp_digest(challenge["mobile"], challenge_id, code)
+        )
+        if valid:
+            challenge["consumed"] = True
+            return "valid", 0
+
+        challenge["attempts"] += 1
+        remaining = _OTP_MAX_ATTEMPTS - challenge["attempts"]
+        return ("locked" if remaining == 0 else "invalid"), remaining
+
+
+def clear_otp_session():
+    session.pop("otp_mobile", None)
+    session.pop("otp_challenge_id", None)
+    session.pop("otp_verified", None)
+
+
 @app.errorhandler(413)
 def request_too_large(_error):
     if request.is_json:
@@ -247,17 +386,48 @@ def request_data():
     return request.form
 
 
+def parse_product_id(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        product_id = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,19}", value):
+        product_id = int(value)
+    else:
+        return None
+    return product_id if 1 <= product_id <= 9223372036854775807 else None
+
+
+def parse_cart_quantity(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        quantity = value
+    elif isinstance(value, str) and re.fullmatch(r"[0-9]{1,2}", value):
+        quantity = int(value)
+    else:
+        return None
+    return quantity if 1 <= quantity <= 10 else None
+
+
 @app.after_request
 def add_security_headers(response):
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    if session.get("user_id"):
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # Avoid default-src until the existing templates' inline assets are audited.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+    )
+    if session.get("user_id") or request.path == "/login" or request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
     if request.is_secure or _production:
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     return response
-
 
 @app.context_processor
 def inject_csrf_token():
@@ -280,6 +450,37 @@ def protect_posts():
         if request.is_json:
             return jsonify(error="Your session expired. Refresh and try again."), 400
         abort(400)
+
+
+@app.before_request
+def limit_sensitive_requests():
+    if request.method != "POST":
+        return None
+    rule = _RATE_LIMITS.get(request.path)
+    if not rule:
+        return None
+    limit, window_seconds = rule
+    client_ip = request.remote_addr or "unknown"
+    now = time.monotonic()
+    key = (request.path, client_ip)
+    with _rate_limit_lock:
+        cutoff = now - window_seconds
+        for old_key, timestamps in list(_rate_limit_hits.items()):
+            while timestamps and timestamps[0] <= cutoff:
+                timestamps.pop(0)
+            if not timestamps:
+                _rate_limit_hits.pop(old_key, None)
+        if len(_rate_limit_hits) > 10000:
+            _rate_limit_hits.clear()
+        timestamps = _rate_limit_hits.setdefault(key, [])
+        if len(timestamps) >= limit:
+            retry_after = max(1, int(window_seconds - (now - timestamps[0])))
+            response = jsonify(error="Too many requests. Please wait and try again.")
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+        timestamps.append(now)
+    return None
 
 
 @app.get("/health")
@@ -328,8 +529,7 @@ def get_shop_data(user_id):
     db = get_db()
     products, cart_items, wishlist, wishlist_items = [], [], [], []
     if db is None:
-        return products, {"items": [], "item_count": 0, "subtotal": Decimal("0"),
-                          "subtotal_formatted": "\u20b90.00"}, wishlist, wishlist_items, ""
+        raise DatabaseUnavailable("The product database is not configured")
     with db.cursor() as cur:
         cur.execute("""SELECT p.product_id, p.name, p.price, p.description,
                 COALESCE(c.quantity, 0), w.product_id,
@@ -338,7 +538,7 @@ def get_shop_data(user_id):
             FROM product AS p
             LEFT JOIN cart AS c ON c.product_id = p.product_id::text AND c.user_id = %s
             LEFT JOIN wishlist AS w ON w.product_id = p.product_id::text AND w.user_id = %s
-            ORDER BY p.product_id""", (user_id, user_id, user_id))
+            ORDER BY p.product_id LIMIT 500""", (user_id, user_id, user_id))
         rows = cur.fetchall()
     search_query = ""
     for product_id, name, price, description, quantity, wished_id, saved_query in rows:
@@ -363,11 +563,11 @@ def get_shop_data(user_id):
 def get_wishlist_page_data(user_id):
     db = get_db()
     if db is None:
-        return []
+        raise DatabaseUnavailable("The product database is not configured")
     with db.cursor() as cur:
         cur.execute("""SELECT p.product_id, p.name, p.price, p.description
             FROM wishlist AS w JOIN product AS p ON p.product_id::text = w.product_id
-            WHERE w.user_id = %s ORDER BY w.added_at DESC""", (user_id,))
+            WHERE w.user_id = %s ORDER BY w.added_at DESC LIMIT 500""", (user_id,))
         rows = cur.fetchall()
     return [{"product_id": row[0], "name": row[1], "price": row[2],
              "price_formatted": f"\u20b9{Decimal(str(row[2])):,.2f}",
@@ -377,8 +577,7 @@ def get_wishlist_page_data(user_id):
 def get_bag_page_data(user_id):
     db = get_db()
     if db is None:
-        return {"items": [], "item_count": 0, "subtotal": Decimal("0"),
-                "subtotal_formatted": "\u20b90.00"}
+        raise DatabaseUnavailable("The product database is not configured")
     with db.cursor() as cur:
         cur.execute("""SELECT p.product_id, p.name, p.price, p.description, c.quantity
             FROM cart AS c JOIN product AS p ON p.product_id::text = c.product_id
@@ -395,9 +594,99 @@ def get_bag_page_data(user_id):
             "subtotal": subtotal, "subtotal_formatted": f"\u20b9{subtotal:,.2f}"}
 
 
+def valid_shipping_address(row):
+    if not row or len(row) != 8:
+        return False
+    label, name, phone, line1, line2, city, state, postal_code = row
+    limits = (60, 120, 30, 250, 250, 100, 100, 20)
+    values = (label, name, phone, line1, line2 or "", city, state, postal_code)
+    if any(not isinstance(value, str) or len(value) > limit
+           for value, limit in zip(values, limits)):
+        return False
+    required = (label, name, phone, line1, city, state, postal_code)
+    return (
+        all(value.strip() for value in required)
+        and re.fullmatch(r"[+0-9() -]{7,30}", phone) is not None
+        and re.search(r"[0-9]", phone) is not None
+        and re.fullmatch(r"[A-Za-z0-9 -]{3,20}", postal_code) is not None
+    )
+
+
+def valid_checkout_cart(cart):
+    items = cart.get("items") if isinstance(cart, dict) else None
+    if not isinstance(items, list) or not items or len(items) > _MAX_CART_LINES:
+        return False
+    seen = set()
+    subtotal = Decimal("0")
+    item_count = 0
+    try:
+        for item in items:
+            if not isinstance(item, dict):
+                return False
+            product_id = parse_product_id(item.get("product_id"))
+            quantity = item.get("quantity")
+            price = Decimal(str(item.get("price")))
+            line_total = Decimal(str(item.get("line_total")))
+            if (product_id is None or product_id in seen
+                    or isinstance(quantity, bool) or not isinstance(quantity, int)
+                    or not 1 <= quantity <= 10 or not price.is_finite() or price < 0
+                    or not line_total.is_finite() or line_total != price * quantity):
+                return False
+            seen.add(product_id)
+            subtotal += line_total
+            item_count += quantity
+        return (
+            subtotal == Decimal(str(cart.get("subtotal")))
+            and item_count == cart.get("item_count")
+            and subtotal.is_finite()
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        return False
+
+
+def render_checkout_page(**context):
+    html = render_template("checkout.html", **context)
+    # Keep checkout messaging consistent with the server-side COD-only policy.
+    html = html.replace(
+        "Card and UPI orders are saved as payment pending until a payment gateway is connected. No online payment is processed here.",
+        "Online card and UPI payments are unavailable. Choose Cash on Delivery.",
+    )
+    return html.replace(
+        "COD orders are confirmed now. Card/UPI orders remain pending until online payment is available.",
+        "Cash on Delivery orders are confirmed now. Online card and UPI orders are disabled.",
+    )
+
+
 def login_required():
     if not session.get("user_id"):
         return redirect(url_for("login"))
+    db = get_db()
+    if db is not None:
+        try:
+            with db.cursor() as cur:
+                cur.execute("""WITH stale_cart AS (
+                    DELETE FROM cart AS c
+                    WHERE c.user_id = %s
+                      AND NOT EXISTS (SELECT 1 FROM product AS p
+                                      WHERE p.product_id::text = c.product_id)
+                    RETURNING 1
+                ), stale_wishlist AS (
+                    DELETE FROM wishlist AS w
+                    WHERE w.user_id = %s
+                      AND NOT EXISTS (SELECT 1 FROM product AS p
+                                      WHERE p.product_id::text = w.product_id)
+                    RETURNING 1
+                )
+                SELECT (SELECT COUNT(*) FROM stale_cart),
+                       (SELECT COUNT(*) FROM stale_wishlist)""",
+                    (session["user_id"], session["user_id"]))
+                removed_cart, removed_wishlist = cur.fetchone()
+            if removed_cart or removed_wishlist:
+                db.commit()
+        except Exception as exc:
+            db.rollback()
+            app.logger.exception("Could not remove cart or wishlist entries for deleted products")
+            raise DatabaseUnavailable("Could not refresh account product data") from exc
     return None
 
 
@@ -408,14 +697,32 @@ def home():
 
 def render_mobile_login(otp_step=False, mobile=""):
     try:
-        return render_template("login.html", otp_step=otp_step, mobile=mobile)
+        html = render_template("login.html", otp_step=otp_step, mobile=mobile)
+        if otp_step:
+            # Adapt the legacy four-digit template control without changing frontend files.
+            html = re.sub(
+                r'(<input\b(?=[^>]*\bid="otp")[^>]*>)',
+                lambda match: re.sub(
+                    r'pattern="[^\"]*" maxlength="[0-9]+" placeholder="[^\"]*"',
+                    'pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit code"',
+                    match.group(1),
+                    count=1,
+                ),
+                html,
+                count=1,
+            )
+            html = html.replace(
+                'href="/login">Change mobile number</a>',
+                f'href="{url_for("login", change_mobile=1)}">Change mobile number</a>',
+            )
+        return html
     except TemplateNotFound:
         token = escape(csrf_token())
         safe_mobile = escape(mobile)
         if otp_step:
             body = f"""
             <label for="otp">One-time password</label>
-            <input id="otp" name="otp" type="text" inputmode="numeric" maxlength="4" pattern="[0-9]{{4}}" placeholder="Enter 1234" required>
+            <input id="otp" name="otp" type="text" inputmode="numeric" maxlength="3" pattern="[0-9]{{3}}" placeholder="Enter OTP" required>
             <input type="hidden" name="action" value="verify_otp">
             <button type="submit">Verify &amp; continue</button>
             <p>Mobile: {safe_mobile}</p>
@@ -429,26 +736,37 @@ def render_mobile_login(otp_step=False, mobile=""):
             <button type="submit">Continue</button>
             """
             heading = "Continue with mobile"
+        change_mobile_link = (
+            f'<p><a href="{escape(url_for("login", change_mobile=1))}">Change mobile number</a></p>'
+            if otp_step else ""
+        )
         return f"""
         <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
         <meta name="csrf-token" content="{token}"><title>Rishmora - Sign in</title></head>
         <body><main><h1>{heading}</h1>
         <form method="post"><input type="hidden" name="csrf_token" value="{token}">{body}</form>
-        </main></body></html>
-        """, 200, {"Content-Type": "text/html; charset=utf-8"}
+        {change_mobile_link}</main></body></html>
+        """
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if session.get("user_id"):
         return redirect(url_for("shop"))
+    force_mobile_form = request.method == "GET" and request.args.get("change_mobile") == "1"
     if request.method == "GET":
-        session.pop("otp_mobile", None)
-        session.pop("otp_verified", None)
+        if not force_mobile_form:
+            challenge_id = session.get("otp_challenge_id")
+            if not get_active_otp_mobile(challenge_id):
+                clear_otp_session()
     if request.method == "POST":
         action = request.form.get("action", "request_otp")
+        if action not in {"request_otp", "verify_otp"}:
+            abort(400)
 
         if action == "request_otp":
+            if _production:
+                return ("Phone OTP sign-in is unavailable until an OTP delivery provider is configured.", 503)
             raw_mobile = request.form.get("mobile", "").strip()
             digits = re.sub(r"\D", "", raw_mobile)
             if len(digits) == 12 and digits.startswith("91"):
@@ -457,37 +775,65 @@ def login():
                 flash("Enter a valid 10-digit Indian mobile number.", "error")
                 return render_mobile_login(otp_step=False)
 
-            session["otp_mobile"] = digits
-            session["otp_verified"] = False
-            flash("OTP sent. For testing, use 1234.", "success")
-            return render_mobile_login(otp_step=True, mobile=digits)
+            try:
+                code, challenge_id, retry_after = issue_otp_challenge(digits)
+            except Exception:
+                app.logger.exception("Could not create a development OTP challenge")
+                return ("Sign-in is temporarily unavailable.", 503)
+            if retry_after is None:
+                return ("OTP service is temporarily busy. Please try again later.", 503)
+            if retry_after:
+                if (session.get("otp_challenge_id") == challenge_id
+                        and get_active_otp_mobile(challenge_id)):
+                    flash(f"Wait {retry_after} seconds before requesting another code.", "error")
+                    return render_mobile_login(otp_step=True, mobile=f"{digits[:2]}******{digits[-2:]}"), 429
+                flash(f"Wait {retry_after} seconds before requesting another code.", "error")
+                return render_mobile_login(otp_step=False), 429
+
+            session["otp_challenge_id"] = challenge_id
+            masked_mobile = f"{digits[:2]}******{digits[-2:]}"
+            print(f"Development OTP for {masked_mobile}: {code}", flush=True)
+            flash("Development code written to the server terminal. No SMS was sent.", "success")
+            return render_mobile_login(otp_step=True, mobile=masked_mobile)
 
         if action == "verify_otp":
-            digits = session.get("otp_mobile", "")
+            challenge_id = session.get("otp_challenge_id", "")
+            mobile = get_active_otp_mobile(challenge_id)
             otp = request.form.get("otp", "").strip()
-            if not digits:
+            if _production:
+                return ("Phone OTP sign-in is unavailable until an OTP delivery provider is configured.", 503)
+            if not mobile:
+                clear_otp_session()
                 flash("Enter your mobile number first.", "error")
                 return render_mobile_login(otp_step=False)
-            if otp != "1234":
-                flash("Invalid OTP. Use 1234 for testing.", "error")
-                return render_mobile_login(otp_step=True, mobile=digits)
+            result, attempts_remaining = verify_otp_challenge(challenge_id, otp)
+            masked_mobile = f"{mobile[:2]}******{mobile[-2:]}"
+            if result != "valid":
+                if result == "expired":
+                    clear_otp_session()
+                    flash("That code expired. Request a new one.", "error")
+                    return render_mobile_login(otp_step=False)
+                if result == "locked":
+                    flash("Too many incorrect attempts. Wait for the resend cooldown, then request a new code.", "error")
+                else:
+                    flash(f"Invalid code. {attempts_remaining} attempts remaining.", "error")
+                return render_mobile_login(otp_step=True, mobile=masked_mobile)
 
             db = get_db()
             if db is None:
-                flash("Sign-in is temporarily unavailable.", "error")
-                return render_mobile_login(otp_step=True, mobile=digits)
+                return ("Sign-in is temporarily unavailable.", 503)
             try:
                 with db.cursor() as cur:
                     cur.execute(
                         "SELECT user_id::text FROM user_account WHERE user_id::text = %s OR username = %s LIMIT 1",
-                        (digits, digits),
+                        (mobile, mobile),
                     )
                     record = cur.fetchone()
                     if record is None:
                         cur.execute(
                             "INSERT INTO user_account (user_id, username, password_hash, mobile) "
                             "VALUES (%s, %s, %s, %s) RETURNING user_id::text",
-                            (digits, digits, "", digits),
+                            (mobile, mobile, "", mobile),
                         )
                         record = cur.fetchone()
                 db.commit()
@@ -498,10 +844,15 @@ def login():
             except Exception:
                 db.rollback()
                 app.logger.exception("Mobile OTP account lookup failed")
-                flash("We couldn't sign you in. Please try again.", "error")
-                return render_mobile_login(otp_step=True, mobile=digits)
-    return render_mobile_login(otp_step=bool(session.get("otp_mobile")),
-                               mobile=session.get("otp_mobile", ""))
+                return ("Sign-in is temporarily unavailable.", 503)
+    if force_mobile_form:
+        return render_mobile_login(otp_step=False)
+    challenge_id = session.get("otp_challenge_id")
+    mobile = get_active_otp_mobile(challenge_id)
+    if not mobile:
+        clear_otp_session()
+    masked_mobile = f"{mobile[:2]}******{mobile[-2:]}" if mobile else ""
+    return render_mobile_login(otp_step=bool(mobile), mobile=masked_mobile)
 
 
 @app.route("/signup", methods=["GET", "POST"])
@@ -538,24 +889,22 @@ def shop():
                 ]
             else:
                 footer_reviews = []
-        except Exception:
+        except Exception as exc:
             db = g.get("db_connection")
             if db is not None:
                 db.rollback()
-            app.logger.exception("Shop customer reviews could not be loaded")
-            footer_reviews = []
+            if is_missing_relation_error(exc):
+                app.logger.info("Optional shop reviews table is not installed")
+                footer_reviews = []
+            else:
+                app.logger.exception("Shop customer reviews could not be loaded")
+                raise
     except Exception:
         app.logger.exception("Shop data query failed")
         db = g.get("db_connection")
         if db is not None:
             db.rollback()
-        products = []
-        cart = {"items": [], "item_count": 0, "subtotal": Decimal("0"), "subtotal_formatted": "\u20b90.00"}
-        wishlist = []
-        wishlist_items = []
-        search_query = ""
-        footer_reviews = []
-        flash("Shop data is temporarily unavailable.", "error")
+        abort(503, description="Shop data is temporarily unavailable.")
     return render_template("shop.html", products=products, cart=cart, wishlist=wishlist,
                            wishlist_items=wishlist_items, search_query=search_query,
                            cart_count=cart["item_count"], wishlist_count=len(wishlist),
@@ -567,12 +916,19 @@ def product_detail_page(prid):
     guard = login_required()
     if guard:
         return guard
+    if not 1 <= prid <= 9223372036854775807:
+        abort(404)
     db = get_db()
     if db is None:
         abort(503)
-    with db.cursor() as cur:
-        cur.execute("SELECT product_id, name, price, description FROM product WHERE product_id = %s", (prid,))
-        row = cur.fetchone()
+    try:
+        with db.cursor() as cur:
+            cur.execute("SELECT product_id, name, price, description FROM product WHERE product_id = %s", (prid,))
+            row = cur.fetchone()
+    except Exception:
+        db.rollback()
+        app.logger.exception("Product lookup failed")
+        abort(503, description="Product details are temporarily unavailable.")
     if not row:
         abort(404)
 
@@ -588,16 +944,24 @@ def product_detail_page(prid):
             detail_row = cur.fetchone()
         if detail_row and detail_row[0]:
             detail = detail_row[0]
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        app.logger.info("Product detail table is not available yet")
+        if is_missing_relation_error(exc):
+            app.logger.info("Product detail table is not available yet")
+        else:
+            app.logger.exception("Product detail lookup failed")
+            abort(503, description="Product details are temporarily unavailable.")
     try:
         with db.cursor() as cur:
-            cur.execute("SELECT highlight FROM top_highlights WHERE prid = %s ORDER BY display_order", (prid,))
+            cur.execute("SELECT highlight FROM top_highlights WHERE prid = %s ORDER BY display_order LIMIT 50", (prid,))
             highlights = [item[0] for item in cur.fetchall()]
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        app.logger.info("Top highlights table is not available yet")
+        if is_missing_relation_error(exc):
+            app.logger.info("Top highlights table is not available yet")
+        else:
+            app.logger.exception("Product highlights lookup failed")
+            abort(503, description="Product details are temporarily unavailable.")
     try:
         with db.cursor() as cur:
             cur.execute("""SELECT rating, title, review_text, created_at,
@@ -609,9 +973,13 @@ def product_detail_page(prid):
         if review_rows:
             average_rating = round(float(review_rows[0][4]), 1)
             review_count = review_rows[0][5]
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        app.logger.info("Reviews table is not available yet")
+        if is_missing_relation_error(exc):
+            app.logger.info("Reviews table is not available yet")
+        else:
+            app.logger.exception("Product reviews lookup failed")
+            abort(503, description="Product reviews are temporarily unavailable.")
 
     if request.method == "POST":
         title = request.form.get("title", "").strip()[:200]
@@ -640,10 +1008,14 @@ def product_detail_page(prid):
                     db.commit()
                     flash("Your review has been added.", "success")
                     return redirect(url_for("product_detail_page", prid=prid) + "#reviews")
-            except Exception:
+            except Exception as exc:
                 db.rollback()
-                app.logger.exception("Product review save failed")
-                flash("Reviews are not ready yet. Run product_content_tables.sql first.", "error")
+                if is_missing_relation_error(exc):
+                    app.logger.info("Reviews table is not available yet")
+                    flash("Reviews are not ready yet. Run product_content_tables.sql first.", "error")
+                else:
+                    app.logger.exception("Product review save failed")
+                    abort(503, description="Your review could not be saved right now.")
 
     try:
         bag_count, wishlist_count = profile_nav_counts(db)
@@ -652,15 +1024,20 @@ def product_detail_page(prid):
             wishlist = [str(item[0]) for item in cur.fetchall()]
     except Exception:
         db.rollback()
-        bag_count, wishlist_count, wishlist = 0, 0, []
+        app.logger.exception("Product navigation data could not be loaded")
+        abort(503, description="Product account data is temporarily unavailable.")
     try:
         with db.cursor() as cur:
             cur.execute("SELECT 1 FROM reviews WHERE prid = %s AND user_id = %s LIMIT 1",
                         (prid, session["user_id"]))
             has_reviewed = cur.fetchone() is not None
-    except Exception:
+    except Exception as exc:
         db.rollback()
-        has_reviewed = False
+        if is_missing_relation_error(exc):
+            has_reviewed = False
+        else:
+            app.logger.exception("Product review status could not be loaded")
+            abort(503, description="Product reviews are temporarily unavailable.")
     return render_template("product_detail.html", product=product, detail=detail,
                            highlights=highlights, reviews=reviews, average_rating=average_rating,
                            review_count=review_count, has_reviewed=has_reviewed,
@@ -681,8 +1058,7 @@ def wishlist_page():
         db = g.get("db_connection")
         if db is not None:
             db.rollback()
-        products, bag = [], {"items": [], "item_count": 0, "subtotal_formatted": "\u20b90.00"}
-        flash("Wishlist data is temporarily unavailable.", "error")
+        abort(503, description="Wishlist data is temporarily unavailable.")
     return render_template("wishlist.html", products=products, cart_count=bag["item_count"],
                            wishlist_count=len(products), show_search=False)
 
@@ -700,10 +1076,7 @@ def bag_page():
         db = g.get("db_connection")
         if db is not None:
             db.rollback()
-        cart = {"items": [], "item_count": 0, "subtotal": Decimal("0"),
-                "subtotal_formatted": "\u20b90.00"}
-        wishlist = []
-        flash("Bag data is temporarily unavailable.", "error")
+        abort(503, description="Bag data is temporarily unavailable.")
     return render_template("bag.html", cart=cart, cart_count=cart["item_count"],
                            wishlist_count=len(wishlist), show_search=False)
 
@@ -715,25 +1088,23 @@ def checkout_page():
         return guard
     db = get_db()
     if db is None:
-        flash("Checkout is unavailable until the database is connected.", "error")
-        return redirect(url_for("bag_page"))
+        abort(503, description="Checkout is unavailable until the database is connected.")
     try:
         cart = get_bag_page_data(session["user_id"])
         bag_count, wishlist_count = profile_nav_counts(db)
     except Exception:
         app.logger.exception("Checkout cart lookup failed")
         db.rollback()
-        flash("We couldn't load your bag. Please try again.", "error")
-        return redirect(url_for("bag_page"))
+        abort(503, description="We couldn't load your bag. Please try again.")
     if not cart["items"]:
         flash("Your bag is empty.", "error")
         return redirect(url_for("bag_page"))
 
     addresses, cards, upis = [], [], []
     for kind, query in (
-        ("addresses", "SELECT address_id::text, label, recipient_name, phone, address_line1, address_line2, city, state, postal_code FROM saved_addresses WHERE user_id = %s ORDER BY created_at DESC"),
-        ("cards", "SELECT card_id::text, label, brand, last_four, expiry_month, expiry_year FROM saved_cards WHERE user_id = %s ORDER BY created_at DESC"),
-        ("upis", "SELECT upi_id::text, label, vpa FROM saved_upi WHERE user_id = %s ORDER BY created_at DESC"),
+        ("addresses", "SELECT address_id::text, label, recipient_name, phone, address_line1, address_line2, city, state, postal_code FROM saved_addresses WHERE user_id = %s ORDER BY created_at DESC LIMIT 100"),
+        ("cards", "SELECT card_id::text, label, brand, last_four, expiry_month, expiry_year FROM saved_cards WHERE user_id = %s ORDER BY created_at DESC LIMIT 100"),
+        ("upis", "SELECT upi_id::text, label, vpa FROM saved_upi WHERE user_id = %s ORDER BY created_at DESC LIMIT 100"),
     ):
         try:
             with db.cursor() as cur:
@@ -749,124 +1120,93 @@ def checkout_page():
                 upis = [{"id": r[0], "label": r[1], "vpa": r[2]} for r in rows]
         except Exception:
             db.rollback()
-            app.logger.info("Checkout saved %s are unavailable; run profile_tables.sql", kind)
+            app.logger.exception("Checkout saved %s could not be loaded", kind)
+            abort(503, description=f"Checkout saved {kind} could not be loaded.")
 
     if request.method == "POST":
+        payment_method = request.form.get("payment_method", "")
+        if payment_method != "cod":
+            if payment_method in {"card", "upi"}:
+                flash("Online payments are not configured. Choose Cash on Delivery.", "error")
+            else:
+                flash("Choose Cash on Delivery.", "error")
+            return render_checkout_page(cart=cart, addresses=addresses, cards=cards, upis=upis,
+                                        cart_count=bag_count, wishlist_count=wishlist_count, show_search=False)
         try:
             with db.cursor() as cur:
                 lock_user_account(cur, session["user_id"])
                 cur.execute("""SELECT c.product_id FROM cart AS c
                     JOIN product AS p ON p.product_id::text = c.product_id
-                    WHERE c.user_id = %s FOR UPDATE OF c""", (session["user_id"],))
+                    WHERE c.user_id = %s FOR UPDATE OF c, p""", (session["user_id"],))
                 locked_cart_rows = cur.fetchall()
             if not locked_cart_rows:
                 flash("Your bag is empty now.", "error")
                 return redirect(url_for("bag_page"))
             cart = get_bag_page_data(session["user_id"])
+            if len(locked_cart_rows) != len(cart["items"]) or not valid_checkout_cart(cart):
+                db.rollback()
+                flash("Your bag contains invalid or too many items. Review it before ordering.", "error")
+                return render_checkout_page(cart=cart, addresses=addresses, cards=cards, upis=upis,
+                                            cart_count=bag_count, wishlist_count=wishlist_count,
+                                            show_search=False), 400
         except Exception:
             db.rollback()
             app.logger.exception("Checkout cart refresh failed")
-            flash("We couldn't refresh your bag. Please try again.", "error")
-            return redirect(url_for("bag_page"))
+            abort(503, description="We couldn't refresh your bag. Please try again.")
         address_id = request.form.get("address_id", "")
-        payment_method = request.form.get("payment_method", "")
-        if payment_method not in {"cod", "card", "upi"}:
-            flash("Choose a payment method.", "error")
-        else:
-            try:
-                with db.cursor() as cur:
-                    cur.execute("""SELECT label, recipient_name, phone, address_line1, address_line2,
-                            city, state, postal_code FROM saved_addresses
-                        WHERE address_id::text = %s AND user_id = %s""", (address_id, session["user_id"]))
-                    address_row = cur.fetchone()
-                    if not address_row:
-                        flash("Choose one of your saved delivery addresses.", "error")
-                    else:
-                        address = dict(zip(("label", "recipient_name", "phone", "address_line1",
-                                            "address_line2", "city", "state", "postal_code"), address_row))
-                        payment_label = "Cash on Delivery"
-                        card, upi = None, None
-                        if payment_method == "card":
-                            card_id = request.form.get("card_id", "")
-                            cur.execute("""SELECT brand, last_four, expiry_month, expiry_year FROM saved_cards
-                                WHERE card_id::text = %s AND user_id = %s""", (card_id, session["user_id"]))
-                            card_row = cur.fetchone()
-                            current_date = date.today()
-                            card_expired = card_row and (
-                                card_row[3] < current_date.year or
-                                (card_row[3] == current_date.year and card_row[2] < current_date.month)
-                            )
-                            if not card_row:
-                                flash("Choose a saved card, or add one in your profile.", "error")
-                            elif card_expired:
-                                flash("That saved card has expired. Update it in your profile.", "error")
-                            else:
-                                card = card_row[:2]
-                                payment_label = f"{card[0]} ending {card[1]}"
-                        elif payment_method == "upi":
-                            upi_id = request.form.get("upi_id", "")
-                            cur.execute("SELECT label, vpa FROM saved_upi WHERE upi_id::text = %s AND user_id = %s",
-                                        (upi_id, session["user_id"]))
-                            upi = cur.fetchone()
-                            if not upi:
-                                flash("Choose a saved UPI ID, or add one in your profile.", "error")
-                            else:
-                                payment_label = f"UPI · {upi[1]}"
-
-                        instrument_valid = payment_method == "cod" or (
-                            payment_method == "card" and card is not None) or (
-                            payment_method == "upi" and upi is not None)
-                        if address_row and instrument_valid:
-                            subtotal = Decimal(str(cart["subtotal"]))
-                            delivery_fee = Decimal("0.00")
-                            discount = Decimal("0.00")
-                            total = subtotal + delivery_fee - discount
-                            is_cod = payment_method == "cod"
-                            cashback = (total * Decimal("0.02")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if is_cod else Decimal("0.00")
-                            order_status = "confirmed" if is_cod else "pending"
-                            payment_status = "cod_due" if is_cod else "pending"
-                            # 48 random bits keep the globally unique order number
-                            # collision risk negligible even as order volume grows.
-                            order_number = f"RM-{date.today():%y%m%d}-{secrets.token_hex(6).upper()}"
-                            items_snapshot = [{"product_id": str(item["product_id"]), "name": item["name"],
-                                               "unit_price": str(item["price"]), "quantity": item["quantity"],
-                                               "line_total": str(item["line_total"])} for item in cart["items"]]
-                            cur.execute("""INSERT INTO orders
-                                (user_id, order_number, status, total_amount, items, payment_method,
-                                 payment_status, payment_label, address_snapshot, subtotal,
-                                 delivery_fee, discount, cashback_amount)
-                                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
-                                RETURNING order_id""",
-                                (session["user_id"], order_number, order_status, total,
-                                 json.dumps(items_snapshot), payment_method, payment_status, payment_label,
-                                 json.dumps(address), subtotal, delivery_fee, discount, cashback))
-                            order_id = cur.fetchone()[0]
-                            if is_cod and cashback > 0:
-                                cur.execute("""INSERT INTO store_credit_ledger (user_id, order_id, amount, reason)
-                                    VALUES (%s, %s, %s, '2 percent cashback on confirmed COD order')""",
-                                    (session["user_id"], order_id, cashback))
-                            cur.execute("DELETE FROM cart WHERE user_id = %s", (session["user_id"],))
-                            db.commit()
-                            if is_cod:
-                                confirmation_message = f"Order {order_number} confirmed."
-                                if cashback:
-                                    confirmation_message += f" ₹{cashback:,.2f} cashback added."
-                                flash(confirmation_message, "success")
-                            else:
-                                flash(f"Order {order_number} saved as pending. Card/UPI payment is not connected yet, so no payment was processed.", "success")
-                            return redirect(url_for("orders_page"))
-            except Exception as exc:
-                db.rollback()
-                app.logger.exception("Checkout order creation failed")
-                error_payload = exc.args[0] if exc.args and isinstance(exc.args[0], dict) else {}
-                sqlstate = getattr(exc, "sqlstate", None) or error_payload.get("C")
-                if sqlstate == "42703":
-                    flash("Checkout database columns are missing. Run checkout_order_columns.sql in Supabase, then retry.", "error")
+        if (len(address_id) > 64
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", address_id)):
+            address_id = ""
+        try:
+            with db.cursor() as cur:
+                cur.execute("""SELECT label, recipient_name, phone, address_line1, address_line2,
+                        city, state, postal_code FROM saved_addresses
+                    WHERE address_id::text = %s AND user_id = %s""", (address_id, session["user_id"]))
+                address_row = cur.fetchone()
+                if not address_row:
+                    flash("Choose one of your saved delivery addresses.", "error")
+                elif not valid_shipping_address(address_row):
+                    flash("The saved delivery address is incomplete or invalid. Update it before ordering.", "error")
                 else:
-                    flash("We couldn't place your order. Please try again; check the server log if it continues.", "error")
+                    address = dict(zip(("label", "recipient_name", "phone", "address_line1",
+                                        "address_line2", "city", "state", "postal_code"), address_row))
+                    subtotal = Decimal(str(cart["subtotal"]))
+                    delivery_fee = Decimal("0.00")
+                    discount = Decimal("0.00")
+                    total = subtotal + delivery_fee - discount
+                    cashback = (total * Decimal("0.02")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    order_number = f"RM-{date.today():%y%m%d}-{secrets.token_hex(6).upper()}"
+                    items_snapshot = [{"product_id": str(item["product_id"]), "name": item["name"],
+                                       "unit_price": str(item["price"]), "quantity": item["quantity"],
+                                       "line_total": str(item["line_total"])} for item in cart["items"]]
+                    cur.execute("""INSERT INTO orders
+                        (user_id, order_number, status, total_amount, items, payment_method,
+                         payment_status, payment_label, address_snapshot, subtotal,
+                         delivery_fee, discount, cashback_amount)
+                        VALUES (%s, %s, 'confirmed', %s, %s::jsonb, 'cod', 'cod_due',
+                                'Cash on Delivery', %s::jsonb, %s, %s, %s, %s)
+                        RETURNING order_id""",
+                        (session["user_id"], order_number, total, json.dumps(items_snapshot),
+                         json.dumps(address), subtotal, delivery_fee, discount, cashback))
+                    order_id = cur.fetchone()[0]
+                    if cashback > 0:
+                        cur.execute("""INSERT INTO store_credit_ledger (user_id, order_id, amount, reason)
+                            VALUES (%s, %s, %s, '2 percent cashback on confirmed COD order')""",
+                            (session["user_id"], order_id, cashback))
+                    cur.execute("DELETE FROM cart WHERE user_id = %s", (session["user_id"],))
+                    db.commit()
+                    confirmation_message = f"Order {order_number} confirmed."
+                    if cashback:
+                        confirmation_message += f" ₹{cashback:,.2f} cashback added."
+                    flash(confirmation_message, "success")
+                    return redirect(url_for("orders_page"))
+        except Exception:
+            db.rollback()
+            app.logger.exception("Checkout order creation failed")
+            abort(503, description="We couldn't place your order. Please try again.")
 
-    return render_template("checkout.html", cart=cart, addresses=addresses, cards=cards, upis=upis,
-                           cart_count=bag_count, wishlist_count=wishlist_count, show_search=False)
+    return render_checkout_page(cart=cart, addresses=addresses, cards=cards, upis=upis,
+                                cart_count=bag_count, wishlist_count=wishlist_count, show_search=False)
 
 
 def profile_nav_counts(db):
@@ -893,19 +1233,20 @@ def orders_page():
     if guard:
         return guard
     db = get_db()
+    if db is None:
+        abort(503, description="Orders are temporarily unavailable because the database is not configured.")
     try:
         with db.cursor() as cur:
             cur.execute("""SELECT order_number, status, total_amount, created_at,
                     payment_method, payment_status, payment_label, cashback_amount
-                FROM orders WHERE user_id = %s ORDER BY created_at DESC""", (session["user_id"],))
+                FROM orders WHERE user_id = %s ORDER BY created_at DESC LIMIT 100""", (session["user_id"],))
             orders = cur.fetchall()
         bag_count, wishlist_count = profile_nav_counts(db)
     except Exception:
         app.logger.exception("Orders page query failed; profile tables may not be installed")
         if db:
             db.rollback()
-        orders, bag_count, wishlist_count = [], 0, 0
-        flash("Run profile_tables.sql in Supabase to enable Orders.", "error")
+        abort(503, description="Orders are temporarily unavailable. Check the database and profile_tables.sql.")
     records = [{"title": row[0], "status": row[1].replace("_", " ").title(),
                 "amount": f"\u20b9{Decimal(str(row[2])):,.2f}", "created_at": row[3],
                 "payment_method": (row[4] or "").upper(),
@@ -924,6 +1265,8 @@ def credit_page():
     if guard:
         return guard
     db = get_db()
+    if db is None:
+        abort(503, description="Credit is temporarily unavailable because the database is not configured.")
     try:
         with db.cursor() as cur:
             cur.execute("""SELECT COALESCE(SUM(amount), 0), COUNT(*)
@@ -934,8 +1277,7 @@ def credit_page():
         app.logger.exception("Credit page query failed; profile tables may not be installed")
         if db:
             db.rollback()
-        balance, cashback_count, bag_count, wishlist_count = Decimal("0"), 0, 0, 0
-        flash("Run profile_tables.sql in Supabase to enable My Credit.", "error")
+        abort(503, description="Credit is temporarily unavailable. Check the database and profile_tables.sql.")
     return render_template("profile_page.html", page_type="credit", records=[],
                            balance=f"\u20b9{Decimal(str(balance)):,.2f}", cashback_count=cashback_count,
                            cart_count=bag_count, wishlist_count=wishlist_count, show_search=False)
@@ -954,9 +1296,12 @@ def manage_saved_details(kind):
         return guard
     config = SAVED_DETAIL_CONFIG[kind]
     db = get_db()
+    if db is None:
+        abort(503, description="Saved details are unavailable because the database is not configured.")
     try:
         if request.method == "POST":
             with db.cursor() as cur:
+                lock_user_account(cur, session["user_id"])
                 if request.form.get("action") == "delete":
                     cur.execute(f"DELETE FROM {config['table']} WHERE {config['pk']}::text = %s AND user_id = %s",
                                 (request.form.get("record_id", ""), session["user_id"]))
@@ -969,24 +1314,35 @@ def manage_saved_details(kind):
                     if not label or not re.fullmatch(r"[A-Za-z0-9._+-]{2,128}@[A-Za-z][A-Za-z0-9.-]{1,63}", vpa):
                         flash("Enter a valid UPI ID, such as name@bank.", "error")
                     else:
-                        cur.execute("INSERT INTO saved_upi (user_id, label, vpa) VALUES (%s, %s, %s)",
-                                    (session["user_id"], label, vpa))
-                        flash("UPI ID saved.", "success")
+                        cur.execute("SELECT COUNT(*) FROM saved_upi WHERE user_id = %s",
+                                    (session["user_id"],))
+                        if cur.fetchone()[0] >= _MAX_SAVED_DETAILS:
+                            flash("You have reached the saved UPI limit.", "error")
+                        else:
+                            cur.execute("INSERT INTO saved_upi (user_id, label, vpa) VALUES (%s, %s, %s)",
+                                        (session["user_id"], label, vpa))
+                            flash("UPI ID saved.", "success")
                 elif kind == "address":
                     fields = [request.form.get(name, "").strip() for name in
                               ("label", "recipient_name", "phone", "address_line1", "address_line2", "city", "state", "postal_code")]
                     limits = (60, 120, 30, 250, 250, 100, 100, 20)
                     too_long = any(len(value) > limit for value, limit in zip(fields, limits))
-                    phone_valid = re.fullmatch(r"[+0-9() -]{7,30}", fields[2]) is not None
+                    phone_valid = (re.fullmatch(r"[+0-9() -]{7,30}", fields[2]) is not None
+                                   and re.search(r"[0-9]", fields[2]) is not None)
                     postal_valid = re.fullmatch(r"[A-Za-z0-9 -]{3,20}", fields[7]) is not None
                     if (any(not fields[i] for i in (0, 1, 2, 3, 5, 6, 7)) or too_long
                             or not phone_valid or not postal_valid):
                         flash("Check the required address fields, phone number, and PIN code.", "error")
                     else:
-                        cur.execute("""INSERT INTO saved_addresses
-                            (user_id, label, recipient_name, phone, address_line1, address_line2, city, state, postal_code)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""", (session["user_id"], *fields))
-                        flash("Address saved.", "success")
+                        cur.execute("SELECT COUNT(*) FROM saved_addresses WHERE user_id = %s",
+                                    (session["user_id"],))
+                        if cur.fetchone()[0] >= _MAX_SAVED_DETAILS:
+                            flash("You have reached the saved address limit.", "error")
+                        else:
+                            cur.execute("""INSERT INTO saved_addresses
+                                (user_id, label, recipient_name, phone, address_line1, address_line2, city, state, postal_code)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""", (session["user_id"], *fields))
+                            flash("Address saved.", "success")
                 else:
                     label = request.form.get("label", "Card").strip()[:60]
                     brand = request.form.get("brand", "").strip()[:30]
@@ -1002,15 +1358,20 @@ def manage_saved_details(kind):
                             or not 1 <= month <= 12 or year > current_date.year + 30 or expired):
                         flash("Enter the card label, brand, last four digits, and a valid expiry date.", "error")
                     else:
-                        cur.execute("""INSERT INTO saved_cards (user_id, label, brand, last_four, expiry_month, expiry_year)
-                            VALUES (%s, %s, %s, %s, %s, %s)""",
-                            (session["user_id"], label, brand, last_four, month, year))
-                        flash("Card details saved safely.", "success")
+                        cur.execute("SELECT COUNT(*) FROM saved_cards WHERE user_id = %s",
+                                    (session["user_id"],))
+                        if cur.fetchone()[0] >= _MAX_SAVED_DETAILS:
+                            flash("You have reached the saved card limit.", "error")
+                        else:
+                            cur.execute("""INSERT INTO saved_cards (user_id, label, brand, last_four, expiry_month, expiry_year)
+                                VALUES (%s, %s, %s, %s, %s, %s)""",
+                                (session["user_id"], label, brand, last_four, month, year))
+                            flash("Card details saved safely.", "success")
             db.commit()
         select_sql = {
-            "upi": "SELECT upi_id::text, label, vpa, created_at FROM saved_upi WHERE user_id = %s ORDER BY created_at DESC",
-            "address": "SELECT address_id::text, label, recipient_name, phone, address_line1, address_line2, city, state, postal_code, created_at FROM saved_addresses WHERE user_id = %s ORDER BY created_at DESC",
-            "card": "SELECT card_id::text, label, brand, last_four, expiry_month, expiry_year, created_at FROM saved_cards WHERE user_id = %s ORDER BY created_at DESC",
+            "upi": "SELECT upi_id::text, label, vpa, created_at FROM saved_upi WHERE user_id = %s ORDER BY created_at DESC LIMIT 100",
+            "address": "SELECT address_id::text, label, recipient_name, phone, address_line1, address_line2, city, state, postal_code, created_at FROM saved_addresses WHERE user_id = %s ORDER BY created_at DESC LIMIT 100",
+            "card": "SELECT card_id::text, label, brand, last_four, expiry_month, expiry_year, created_at FROM saved_cards WHERE user_id = %s ORDER BY created_at DESC LIMIT 100",
         }
         with db.cursor() as cur:
             cur.execute(select_sql[kind], (session["user_id"],))
@@ -1020,8 +1381,7 @@ def manage_saved_details(kind):
         app.logger.exception("Saved %s page failed; profile tables may not be installed", kind)
         if db:
             db.rollback()
-        records, bag_count, wishlist_count = [], 0, 0
-        flash("Run profile_tables.sql in Supabase to enable saved details.", "error")
+        abort(503, description="Saved details are unavailable. Check the database and profile_tables.sql.")
     return render_template("saved_details.html", kind=kind, title=config["title"], records=records,
                            current_year=date.today().year,
                            cart_count=bag_count, wishlist_count=wishlist_count, show_search=False)
@@ -1048,34 +1408,43 @@ def add_to_cart():
     if guard:
         return jsonify(error="Please sign in again."), 401
     data = request_data()
-    product_id = str(data.get("product_id", ""))
+    product_id = parse_product_id(data.get("product_id"))
+    if product_id is None:
+        return jsonify(error="Enter a valid product ID."), 400
+    product_id = str(product_id)
     try:
-        raw_quantity = data.get("quantity", 1)
-        if isinstance(raw_quantity, bool):
-            raise ValueError("quantity must be an integer")
-        quantity = int(raw_quantity)
-        if str(raw_quantity).strip() not in (str(quantity), f"{quantity}.0") or not 1 <= quantity <= 10:
-            raise ValueError("quantity must be between 1 and 10")
+        quantity = parse_cart_quantity(data.get("quantity", 1))
+        if quantity is None:
+            return jsonify(error="Quantity must be a whole number from 1 to 10."), 400
         db = get_db()
         if not db:
             return jsonify(error="The product database is not configured yet."), 503
         with db.cursor() as cur:
             lock_user_account(cur, session["user_id"])
             cur.execute("""WITH item AS (
-                    SELECT product_id::text AS product_id FROM product WHERE product_id::text = %s
+                    SELECT product_id::text AS product_id FROM product
+                    WHERE product_id::text = %s FOR KEY SHARE
                 ), upserted AS (
                     INSERT INTO cart (user_id, product_id, quantity)
                     SELECT %s, item.product_id, %s FROM item
+                    WHERE EXISTS (SELECT 1 FROM cart AS existing
+                                  WHERE existing.user_id = %s AND existing.product_id = item.product_id)
+                       OR (SELECT COUNT(*) FROM cart WHERE user_id = %s) < %s
                     ON CONFLICT (user_id, product_id)
                     DO UPDATE SET quantity = LEAST(cart.quantity + EXCLUDED.quantity, 10)
                     RETURNING product_id, quantity
                 )
-                SELECT EXISTS(SELECT 1 FROM upserted),
+                SELECT EXISTS(SELECT 1 FROM item), EXISTS(SELECT 1 FROM upserted),
                     (SELECT quantity FROM upserted)""",
-                (product_id, session["user_id"], quantity))
-            product_found, product_quantity = cur.fetchone()
+                (product_id, session["user_id"], quantity, session["user_id"],
+                 session["user_id"], _MAX_CART_LINES))
+            product_found, item_added, product_quantity = cur.fetchone()
             if not product_found:
+                db.rollback()
                 return jsonify(error="That product is no longer available."), 404
+            if not item_added:
+                db.rollback()
+                return jsonify(error="Your bag is full. Remove an item before adding another."), 409
             cur.execute("""SELECT COALESCE(SUM(c.quantity), 0) FROM cart AS c
                 JOIN product AS p ON p.product_id::text = c.product_id
                 WHERE c.user_id = %s""", (session["user_id"],))
@@ -1099,8 +1468,8 @@ def add_to_cart():
         db.commit()
         return jsonify(item_count=item_count, product_quantity=product_quantity,
                        message="Added to your bag.", cart=drawer_cart)
-    except (TypeError, ValueError):
-        return jsonify(error="Invalid product request."), 400
+    except DatabaseUnavailable:
+        return jsonify(error="The product database is temporarily unavailable."), 503
     except Exception:
         db = g.get("db_connection")
         if db is not None:
@@ -1115,7 +1484,10 @@ def remove_from_cart():
     if guard:
         return jsonify(error="Please sign in again."), 401
     data = request_data()
-    product_id = str(data.get("product_id", ""))
+    product_id = parse_product_id(data.get("product_id"))
+    if product_id is None:
+        return jsonify(error="Enter a valid product ID."), 400
+    product_id = str(product_id)
     db = get_db()
     if db is None:
         return jsonify(error="The product database is not configured yet."), 503
@@ -1152,7 +1524,10 @@ def change_cart_quantity(delta):
     if guard:
         return jsonify(error="Please sign in again."), 401
     data = request_data()
-    product_id = str(data.get("product_id", ""))
+    product_id = parse_product_id(data.get("product_id"))
+    if product_id is None:
+        return jsonify(error="Enter a valid product ID."), 400
+    product_id = str(product_id)
     db = get_db()
     if db is None:
         return jsonify(error="The product database is not configured yet."), 503
@@ -1167,6 +1542,7 @@ def change_cart_quantity(delta):
                 (delta, session["user_id"], product_id))
             updated = cur.fetchone()
             if not updated:
+                db.rollback()
                 return jsonify(error="That item is no longer in your bag."), 404
             quantity = updated[0]
             cur.execute("""SELECT p.price * c.quantity,
@@ -1196,13 +1572,31 @@ def toggle_wishlist():
     if guard:
         return jsonify(error="Please sign in again."), 401
     data = request_data()
-    product_id = str(data.get("product_id", ""))
+    product_id = parse_product_id(data.get("product_id"))
+    if product_id is None:
+        return jsonify(error="Enter a valid product ID."), 400
+    product_id = str(product_id)
     db = get_db()
     if db is None:
         return jsonify(error="The product database is not configured yet."), 503
     try:
         with db.cursor() as cur:
             lock_user_account(cur, session["user_id"])
+            cur.execute("SELECT EXISTS(SELECT 1 FROM product WHERE product_id::text = %s)",
+                        (product_id,))
+            if not cur.fetchone()[0]:
+                db.rollback()
+                return jsonify(error="That product is no longer available."), 404
+            cur.execute("""SELECT EXISTS(SELECT 1 FROM wishlist
+                            WHERE user_id = %s AND product_id = %s),
+                    COUNT(*) FROM wishlist AS w
+                JOIN product AS p ON p.product_id::text = w.product_id
+                WHERE w.user_id = %s""",
+                (session["user_id"], product_id, session["user_id"]))
+            already_saved, saved_count = cur.fetchone()
+            if not already_saved and saved_count >= _MAX_WISHLIST_ITEMS:
+                db.rollback()
+                return jsonify(error="Your wishlist is full. Remove an item before adding another."), 409
             cur.execute("""WITH picked AS (
                 SELECT product_id::text AS product_id FROM product WHERE product_id::text = %s
             ), removed AS (
@@ -1318,6 +1712,9 @@ def api_chat_history():
         return jsonify(messages=load_chat_history(db, session["user_id"], chat_id))
     except Exception:
         app.logger.exception("Could not load chat history")
+        db = g.get("db_connection")
+        if db is not None:
+            db.rollback()
         return jsonify(error="Chat history is temporarily unavailable."), 503
 
 
@@ -1361,6 +1758,9 @@ def api_chat():
         history = load_chat_history(db, session["user_id"], chat_id)
     except Exception:
         app.logger.exception("Could not load chat context")
+        db = g.get("db_connection")
+        if db is not None:
+            db.rollback()
         return jsonify(error="Chat is temporarily unavailable."), 503
 
     conversation = history + [{"role": "user", "text": message}]
@@ -1410,6 +1810,17 @@ def api_chat():
         conversation.append({"role": "model", "text": reply})
         conversation = conversation[-20:]
         with db.cursor() as cur:
+            lock_user_account(cur, session["user_id"])
+            cur.execute("""DELETE FROM customer_ui_state AS stale
+                WHERE stale.user_id = %s AND left(stale.state_key, 13) = 'chat_history:'
+                  AND stale.state_key <> %s
+                  AND stale.state_key NOT IN (
+                    SELECT state_key FROM customer_ui_state
+                    WHERE user_id = %s AND left(state_key, 13) = 'chat_history:'
+                    ORDER BY updated_at DESC LIMIT %s
+                  )""",
+                (session["user_id"], f"chat_history:{chat_id}", session["user_id"],
+                 _MAX_CHAT_SESSIONS - 1))
             cur.execute("""INSERT INTO customer_ui_state
                 (user_id, state_key, state_value, updated_at)
                 VALUES (%s, %s, %s::jsonb, now())
@@ -1421,6 +1832,7 @@ def api_chat():
         return jsonify(reply=reply)
     except Exception:
         app.logger.exception("Gemini chat request failed")
+        db.rollback()
         return jsonify(error="Store Assistant is temporarily unavailable. Please try again."), 502
 
 
