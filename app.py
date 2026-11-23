@@ -755,7 +755,9 @@ def checkout_page():
         try:
             with db.cursor() as cur:
                 lock_user_account(cur, session["user_id"])
-                cur.execute("SELECT product_id FROM cart WHERE user_id = %s FOR UPDATE", (session["user_id"],))
+                cur.execute("""SELECT c.product_id FROM cart AS c
+                    JOIN product AS p ON p.product_id::text = c.product_id
+                    WHERE c.user_id = %s FOR UPDATE OF c""", (session["user_id"],))
                 locked_cart_rows = cur.fetchall()
             if not locked_cart_rows:
                 flash("Your bag is empty now.", "error")
@@ -869,9 +871,13 @@ def checkout_page():
 
 def profile_nav_counts(db):
     with db.cursor() as cur:
-        cur.execute("SELECT COALESCE(SUM(quantity), 0) FROM cart WHERE user_id = %s", (session["user_id"],))
+        cur.execute("""SELECT COALESCE(SUM(c.quantity), 0) FROM cart AS c
+            JOIN product AS p ON p.product_id::text = c.product_id
+            WHERE c.user_id = %s""", (session["user_id"],))
         bag_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM wishlist WHERE user_id = %s", (session["user_id"],))
+        cur.execute("""SELECT COUNT(*) FROM wishlist AS w
+            JOIN product AS p ON p.product_id::text = w.product_id
+            WHERE w.user_id = %s""", (session["user_id"],))
         wishlist_count = cur.fetchone()[0]
     return bag_count, wishlist_count
 
@@ -1070,8 +1076,9 @@ def add_to_cart():
             product_found, product_quantity = cur.fetchone()
             if not product_found:
                 return jsonify(error="That product is no longer available."), 404
-            cur.execute("SELECT COALESCE(SUM(quantity), 0) FROM cart WHERE user_id = %s",
-                        (session["user_id"],))
+            cur.execute("""SELECT COALESCE(SUM(c.quantity), 0) FROM cart AS c
+                JOIN product AS p ON p.product_id::text = c.product_id
+                WHERE c.user_id = %s""", (session["user_id"],))
             item_count = cur.fetchone()[0]
         cart = get_bag_page_data(session["user_id"])
         drawer_cart = {
@@ -1118,8 +1125,9 @@ def remove_from_cart():
             cur.execute("DELETE FROM cart WHERE user_id = %s AND product_id::text = %s",
                         (session["user_id"], product_id))
             removed = cur.rowcount > 0
-            cur.execute("SELECT COALESCE(SUM(quantity), 0) FROM cart WHERE user_id = %s",
-                        (session["user_id"],))
+            cur.execute("""SELECT COALESCE(SUM(c.quantity), 0) FROM cart AS c
+                JOIN product AS p ON p.product_id::text = c.product_id
+                WHERE c.user_id = %s""", (session["user_id"],))
             item_count = cur.fetchone()[0]
         db.commit()
         return jsonify(item_count=item_count, removed=removed)
@@ -1153,14 +1161,18 @@ def change_cart_quantity(delta):
             lock_user_account(cur, session["user_id"])
             cur.execute("""UPDATE cart
                 SET quantity = LEAST(GREATEST(quantity + %s, 1), 10)
-                WHERE user_id = %s AND product_id = %s RETURNING quantity""",
+                WHERE user_id = %s AND product_id = %s
+                  AND EXISTS (SELECT 1 FROM product WHERE product_id::text = cart.product_id)
+                RETURNING quantity""",
                 (delta, session["user_id"], product_id))
             updated = cur.fetchone()
             if not updated:
                 return jsonify(error="That item is no longer in your bag."), 404
             quantity = updated[0]
             cur.execute("""SELECT p.price * c.quantity,
-                    (SELECT COALESCE(SUM(quantity), 0) FROM cart WHERE user_id = %s),
+                    (SELECT COALESCE(SUM(c2.quantity), 0) FROM cart AS c2
+                     JOIN product AS p2 ON p2.product_id::text = c2.product_id
+                     WHERE c2.user_id = %s),
                     (SELECT COALESCE(SUM(c2.quantity * p2.price), 0)
                      FROM cart AS c2 JOIN product AS p2 ON p2.product_id::text = c2.product_id
                      WHERE c2.user_id = %s)
@@ -1207,8 +1219,11 @@ def toggle_wishlist():
             SELECT EXISTS(SELECT 1 FROM picked),
                 (EXISTS(SELECT 1 FROM added) OR
                  (NOT EXISTS(SELECT 1 FROM removed) AND EXISTS(SELECT 1 FROM picked))),
-                (SELECT COUNT(*) FROM wishlist WHERE user_id = %s) +
-                    CASE WHEN NOT EXISTS(SELECT 1 FROM removed) THEN 1 ELSE -1 END""",
+                (SELECT COUNT(*) FROM wishlist AS w
+                 JOIN product AS p ON p.product_id::text = w.product_id
+                 WHERE w.user_id = %s) +
+                    CASE WHEN EXISTS(SELECT 1 FROM added) THEN 1
+                         WHEN EXISTS(SELECT 1 FROM removed) THEN -1 ELSE 0 END""",
                 (product_id, session["user_id"], session["user_id"], session["user_id"]))
             product_found, active, count = cur.fetchone()
             if not product_found:
