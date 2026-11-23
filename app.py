@@ -304,7 +304,7 @@ def issue_otp_challenge(mobile):
         elif len(_otp_challenges) >= _OTP_MAX_CHALLENGES:
             return None, None, None
 
-        code = "123"  # Fixed development OTP requested by the project owner.
+        code = "1234"  # Fixed development OTP; no OTP provider is configured.
         challenge_id = secrets.token_urlsafe(24)
         if current_id:
             _otp_challenges.pop(current_id, None)
@@ -704,7 +704,7 @@ def render_mobile_login(otp_step=False, mobile=""):
                 r'(<input\b(?=[^>]*\bid="otp")[^>]*>)',
                 lambda match: re.sub(
                     r'pattern="[^\"]*" maxlength="[0-9]+" placeholder="[^\"]*"',
-                    'pattern="[0-9]{6}" maxlength="6" placeholder="Enter 6-digit code"',
+                    'pattern="[0-9]{4}" maxlength="4" placeholder="Enter 4-digit code"',
                     match.group(1),
                     count=1,
                 ),
@@ -722,7 +722,7 @@ def render_mobile_login(otp_step=False, mobile=""):
         if otp_step:
             body = f"""
             <label for="otp">One-time password</label>
-            <input id="otp" name="otp" type="text" inputmode="numeric" maxlength="3" pattern="[0-9]{{3}}" placeholder="Enter OTP" required>
+            <input id="otp" name="otp" type="text" inputmode="numeric" maxlength="4" pattern="[0-9]{{4}}" placeholder="Enter 4-digit OTP" required>
             <input type="hidden" name="action" value="verify_otp">
             <button type="submit">Verify &amp; continue</button>
             <p>Mobile: {safe_mobile}</p>
