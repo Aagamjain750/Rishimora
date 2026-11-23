@@ -522,6 +522,28 @@ def shop():
         return guard
     try:
         products, cart, wishlist, wishlist_items, search_query = get_shop_data(session["user_id"])
+        try:
+            db = get_db()
+            if db is not None:
+                with db.cursor() as cur:
+                    cur.execute("""SELECT r.rating, r.title, r.review_text, r.created_at, p.name
+                        FROM reviews AS r
+                        JOIN product AS p ON p.product_id = r.prid
+                        ORDER BY r.created_at DESC LIMIT 3""")
+                    review_rows = cur.fetchall()
+                footer_reviews = [
+                    {"rating": row[0], "title": row[1], "text": row[2],
+                     "created_at": row[3], "product_name": row[4]}
+                    for row in review_rows
+                ]
+            else:
+                footer_reviews = []
+        except Exception:
+            db = g.get("db_connection")
+            if db is not None:
+                db.rollback()
+            app.logger.exception("Shop customer reviews could not be loaded")
+            footer_reviews = []
     except Exception:
         app.logger.exception("Shop data query failed")
         db = g.get("db_connection")
@@ -532,11 +554,12 @@ def shop():
         wishlist = []
         wishlist_items = []
         search_query = ""
+        footer_reviews = []
         flash("Shop data is temporarily unavailable.", "error")
     return render_template("shop.html", products=products, cart=cart, wishlist=wishlist,
                            wishlist_items=wishlist_items, search_query=search_query,
                            cart_count=cart["item_count"], wishlist_count=len(wishlist),
-                           show_search=True)
+                           footer_reviews=footer_reviews, show_search=True)
 
 
 @app.route("/product/<int:prid>", methods=["GET", "POST"])
@@ -1108,6 +1131,15 @@ def remove_from_cart():
 
 @app.post("/cart/increase")
 def increase_cart_quantity():
+    return change_cart_quantity(1)
+
+
+@app.post("/cart/decrease")
+def decrease_cart_quantity():
+    return change_cart_quantity(-1)
+
+
+def change_cart_quantity(delta):
     guard = login_required()
     if guard:
         return jsonify(error="Please sign in again."), 401
@@ -1119,9 +1151,10 @@ def increase_cart_quantity():
     try:
         with db.cursor() as cur:
             lock_user_account(cur, session["user_id"])
-            cur.execute("""UPDATE cart SET quantity = LEAST(quantity + 1, 10)
+            cur.execute("""UPDATE cart
+                SET quantity = LEAST(GREATEST(quantity + %s, 1), 10)
                 WHERE user_id = %s AND product_id = %s RETURNING quantity""",
-                (session["user_id"], product_id))
+                (delta, session["user_id"], product_id))
             updated = cur.fetchone()
             if not updated:
                 return jsonify(error="That item is no longer in your bag."), 404
