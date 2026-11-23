@@ -765,8 +765,6 @@ def login():
             abort(400)
 
         if action == "request_otp":
-            if _production:
-                return ("Phone OTP sign-in is unavailable until an OTP delivery provider is configured.", 503)
             raw_mobile = request.form.get("mobile", "").strip()
             digits = re.sub(r"\D", "", raw_mobile)
             if len(digits) == 12 and digits.startswith("91"):
@@ -793,15 +791,13 @@ def login():
             session["otp_challenge_id"] = challenge_id
             masked_mobile = f"{digits[:2]}******{digits[-2:]}"
             print(f"Development OTP for {masked_mobile}: {code}", flush=True)
-            flash("Development code written to the server terminal. No SMS was sent.", "success")
+            flash("Use the fixed OTP 1234 to continue. No SMS is sent.", "success")
             return render_mobile_login(otp_step=True, mobile=masked_mobile)
 
         if action == "verify_otp":
             challenge_id = session.get("otp_challenge_id", "")
             mobile = get_active_otp_mobile(challenge_id)
             otp = request.form.get("otp", "").strip()
-            if _production:
-                return ("Phone OTP sign-in is unavailable until an OTP delivery provider is configured.", 503)
             if not mobile:
                 clear_otp_session()
                 flash("Enter your mobile number first.", "error")
